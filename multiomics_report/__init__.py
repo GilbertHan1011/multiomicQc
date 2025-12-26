@@ -74,6 +74,10 @@ def execution_start():
             'fn': ['*.json', '*.cnt'],
             'contents': 'num_genes_detected'
         },
+        'rnaseq/mad_rna' : {
+            'fn': '*summary_metrics.json', 
+            'contents': 'MAD of log ratios'
+        }
     }
     config.update_dict(config.sp, search_patterns)
 

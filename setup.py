@@ -11,8 +11,8 @@ setup(
     description='Custom multiomics plugin for MultiQC',
     packages=find_packages(),
     include_package_data=True,
-    url = 'https://github.com/regulatory-genomics/RNA-sm/tree/main/workflow/scripts/multiqc_rnaseq',
-    download_url = 'https://github.com/regulatory-genomics/RNA-sm/tree/main/workflow/scripts/multiqc_rnaseq',
+    url = 'https://github.com/GilbertHan1011/multiomicQc',
+    download_url = 'https://github.com/GilbertHan1011/multiomicQc',
     install_requires=[
         'multiqc',
         'click',
@@ -28,6 +28,7 @@ setup(
             'before_config = multiomics_report:before_config',
             # Hook execution_start to load search patterns
             'execution_start = multiomics_report:execution_start',
+            'after_modules = multiomics_report:multiomics_report_after_modules',
         ]
     },
     classifiers=[

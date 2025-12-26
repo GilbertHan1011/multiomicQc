@@ -8,7 +8,7 @@ class MultiqcModule(BaseMultiqcModule):
     def __init__(self):
         # 1. Initialise the parent class
         super(MultiqcModule, self).__init__(
-            name='RNA-Seq',
+            name='multiomics',
             anchor='multiomic_report',
             href='https://github.com/regulatory-genomics/RNA-sm',
             info='custom pipeline'
@@ -20,7 +20,7 @@ class MultiqcModule(BaseMultiqcModule):
         self.rnaseqc_data = dict()    # Stores metrics.tsv data
         self.genetype_data = dict()   # Stores gene_type_counts data
         self.rsem_data = dict()       # Stores rsem.genes.json data
-
+        self.mad_data = dict()        # Stores mad_qc.json data
         # -----------------------------------------------------------
         # 3. PARSING LOGIC
         # -----------------------------------------------------------
@@ -40,6 +40,8 @@ class MultiqcModule(BaseMultiqcModule):
         for f in self.find_log_files('rnaseq/rsem'):
             self.parse_rsem_json(f)
 
+        for f in self.find_log_files('rnaseq/mad_rna'):
+            self.parse_mad_json(f)
         # -----------------------------------------------------------
         # 4. FILTERING & EXIT
         # -----------------------------------------------------------
@@ -47,7 +49,7 @@ class MultiqcModule(BaseMultiqcModule):
         self.rnaseqc_data = self.ignore_samples(self.rnaseqc_data)
         self.genetype_data = self.ignore_samples(self.genetype_data)
         self.rsem_data = self.ignore_samples(self.rsem_data)
-
+        self.mad_data = self.ignore_samples(self.mad_data)
         # If no data found at all, raise warning
         if len(self.rnaseqc_data) == 0 and len(self.genetype_data) == 0:
             raise UserWarning
@@ -97,6 +99,33 @@ class MultiqcModule(BaseMultiqcModule):
                 self.rsem_data[f['s_name']] = data
         except Exception as e:
             pass
+    
+    def parse_mad_json(self, f):
+        """ Parses the MAD QC summary JSON file """
+        try:
+            data = json.loads(f['content'])
+            
+            # Validation: specific key check
+            if "MAD of log ratios" in data:
+                # Use the clean sample name provided by MultiQC
+                s_name = f['s_name']
+                
+                # Check if this sample already has data (handling duplicates)
+                if s_name in self.mad_data:
+                    self.logger.debug(f"Duplicate sample found for MAD QC: {s_name}")
+                
+                # Also check for status field to skip invalid files
+                if "status" in data and data["status"] == "No pairs available for aggregation":
+                    # Skip files with no pairs
+                    return
+                
+                self.mad_data[s_name] = data
+                self.add_data_source(f, section='mad_qc')
+                
+        except json.JSONDecodeError as e:
+            self.logger.warning(f"Failed to parse MAD QC JSON file {f['fn']}: {e}")
+        except Exception as e:
+            self.logger.warning(f"Error parsing MAD QC file {f['fn']}: {e}")
 
     # ===============================================================
     # REPORT WRITING
