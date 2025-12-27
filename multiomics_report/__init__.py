@@ -1,10 +1,34 @@
 import os
 import csv
 import logging
-from multiqc import config
+import re
+from typing import Dict, List, Set, Optional, Any
+from collections import OrderedDict
+from multiqc import config, report
+from multiqc.types import ColumnKey, SectionKey
 from pkg_resources import get_distribution
 
 log = logging.getLogger("multiqc")
+
+# --- CONSTANTS & CONFIGURATION ---
+
+# 1. Metrics to move/merge (The "MAD" headers)
+MAD_METRIC_KEYS = [
+    'MAD of log ratios', 
+    'Pearson correlation', 
+    'Spearman correlation', 
+    'SD of log ratios', 
+    'num_pairs_evaluated'
+]
+
+# 2. Regex to identify Parent Samples (Group B) vs Child Samples (Group A)
+# Parents do NOT have a hyphen (e.g., 'test', 'apple')
+IS_PARENT_REGEX = re.compile(r'^[^-]+$')
+
+# 3. Defaults for Config
+MODULE_DEFAULTS = {
+    'fastp': {'s_name_filenames': True},
+}
 
 # Save this plugin's version number (defined in setup.py) to the MultiQC config
 try:
@@ -12,93 +36,43 @@ try:
 except Exception:
     config.multiomics_report_version = "unknown"
 
-# MODULE_DEFAULTS should use a primitive value (not a list) for 'use_filename_as_sample_name'
-MODULE_DEFAULTS = {
-    'fastp': {
-        's_name_filenames': True,
-    },
-}
-
 
 def before_config():
-    """
-    Hook that runs before config is finalized (before file search).
-    This is where we set up sample renaming rules.
-    
-    IMPORTANT: This runs BEFORE file search, so patterns are set before
-    sample names are cleaned from filenames. This is the correct place to
-    set fn_clean_exts.
-    """
-    # --- 1. Clean Extensions (Crucial step!) ---
-    # Strip common extensions so filenames become clean sample names
-    # e.g., 'test1_1_fastp.json' -> 'test1_1' (after _fastp pattern matches)
-    fn_clean_enabled = getattr(config, 'fn_clean_sample_names', True)
-    if not fn_clean_enabled:
-        log.warning(
-            "Plugin: fn_clean_sample_names is False! "
-            "Patterns won't be applied. Enable it in config or set it to True."
-        )
-        # Optionally enable it
+    """Set up configuration defaults and cleaning rules."""
+    # 1. Clean Extensions
+    if not getattr(config, 'fn_clean_sample_names', True):
+        log.warning("Plugin: fn_clean_sample_names was False. Enabling it.")
         config.fn_clean_sample_names = True
-        log.info("Plugin: Enabled fn_clean_sample_names")
-    
-    # Initialize fn_clean_exts if it doesn't exist
+
     if not hasattr(config, 'fn_clean_exts'):
         config.fn_clean_exts = []
-    
-    # Add RNA-seq specific extensions to clean
+
     extra_exts = [
-        '_Log.final.out',  # Most specific first
-        '.summary_metrics.json',
-        '.metrics.tsv',    # More specific before '.metrics'
-        '.metrics',
-        '.isoforms',
-        '.genes',
-        '_fastp',          # Must come before .json, .html, etc. in defaults
+        '_Log.final.out', '.summary_metrics.json', '.metrics.tsv', 
+        '.metrics', '.isoforms', '.genes', '_fastp'
     ]
-    
-    # Prepend to the beginning of the list (checked first)
+    # Prepend to ensure higher priority
     config.fn_clean_exts[0:0] = extra_exts
-    
-    log.debug(f"Added {len(extra_exts)} patterns to fn_clean_exts")
-    
-    # Set default config for modules
-    for module_name, module_config in MODULE_DEFAULTS.items():
-        # Only set if not already configured by user
-        if not hasattr(config, module_name):
-            config.update({module_name: module_config})
-            log.debug(f"Set default config for {module_name}: {module_config}")
+    log.debug(f"Plugin: Added {len(extra_exts)} patterns to fn_clean_exts")
+
+    # 2. Module Defaults
+    for mod, defaults in MODULE_DEFAULTS.items():
+        if not hasattr(config, mod):
+            config.update({mod: defaults})
         else:
-            # Merge or overwrite based on type
-            existing = getattr(config, module_name, None)
-            if isinstance(module_config, dict) and isinstance(existing, dict):
-                # Merge: user config overrides defaults
-                merged = {**module_config, **existing}
-            else:
-                # If the user has a value (existing), keep it. If not, use the default.
-                merged = existing if existing is not None else module_config
-            config.update({module_name: merged})
-            log.debug(f"Merged config for {module_name}: {merged}")
+            # Shallow merge: user config wins
+            existing = getattr(config, mod)
+            if isinstance(existing, dict):
+                config.update({mod: {**defaults, **existing}})
 
-    final_patterns = list(config.fn_clean_exts) if hasattr(config, 'fn_clean_exts') else []
-
+    # 3. Table Sample Merge Rules
     if not hasattr(config, 'table_sample_merge') or config.table_sample_merge is None:
         config.table_sample_merge = {}
-
-    # Define the Regex Logic for table_sample_merge
-    merge_rule = {
-        '': [  # Empty label - won't be appended to group name
-            {
-                'type': 'regex',
-                'pattern': r'(_run|_)\d+$'  # Matches _run1, _run2, _1, _2, etc.
-            }
-        ]
-    }
     
-    # Apply the rule (merge with existing config if any)
-    existing_merge = dict(config.table_sample_merge) if config.table_sample_merge else {}
-    merged_config = {**merge_rule, **existing_merge}  # Our rule takes precedence
-    config.update({'table_sample_merge': merged_config})
+    merge_rule = {
+        '': [{'type': 'regex', 'pattern': r'(_run|_)\d+$'}]
+    }
+    config.table_sample_merge.update(merge_rule)
 
 
 def config_loaded():
@@ -117,40 +91,22 @@ def config_loaded():
 
 
 def execution_start():
-    """ 
-    Code to run when MultiQC starts (after config is loaded).
-    Register search patterns for our custom modules.
-    """
+    """Register search patterns."""
     from multiqc.utils.util_functions import update_dict
     
-    # Register search patterns
-    # IMPORTANT: Pattern keys must start with the registered module name 'multiomics_report' 
-    # (as defined in setup.py entry_points) or MultiQC will filter them out
     search_patterns = {
-        'multiomics_report/rnaseqqc': {
-            'fn': '*metrics.tsv',
-        },
-        'multiomics_report/gene_type_counts': {
-            'fn': '*.json',
-            'contents': 'gene_type_count'
-        },
+        'multiomics_report/rnaseqqc': {'fn': '*metrics.tsv'},
+        'multiomics_report/gene_type_counts': {'fn': '*.json', 'contents': 'gene_type_count'},
         "multiomics_report/rsem": [
-            {
-                "fn": "*.json",
-                'contents': 'num_genes_detected'
-            },
-            {
-                "fn": "*.cnt",
-                'contents': 'num_genes_detected',
-            }
+            {'fn': "*.json", 'contents': 'num_genes_detected'},
+            {'fn': "*.cnt", 'contents': 'num_genes_detected'},
         ],
-        'multiomics_report/mad_rna' : {
-            'fn_re': r'.*summary_metrics\.json$',  # Matches only *summary_metrics.json files
-            'contents': 'MAD of log ratios',  # Additional content check for specificity
-            'num_lines': 10  # Only check first 10 lines for JSON content
+        'multiomics_report/mad_rna': {
+            'fn_re': r'.*summary_metrics\.json$',
+            'contents': 'MAD of log ratios',
+            'num_lines': 10
         }
     }
-    # Merge search patterns into config.sp (adds to beginning to supersede defaults)
     config.sp = update_dict(config.sp, search_patterns, add_in_the_beginning=True)
 
 def find_sample_sheet():
@@ -253,9 +209,191 @@ def generate_rename_tsv(rules_dict, annotation_file):
 
 def multiomics_report_after_modules():
     """
-    Hook that runs after all modules are initialized.
-    This allows us to access data from other modules like multiomics.
+    Main Logic Hook:
+    1. Harvests 'Parent' (B) data and removes it from the table.
+    2. Harvests 'MAD' headers and removes them from the source section.
+    3. Merges Parent data into 'Child' (A) samples.
     """
-    # This hook runs after modules, but we'll handle data access in the module itself
-    # using a different approach
-    pass
+    
+    # Phase 1: extract B samples (test, apple) and remove them from display
+    parent_data = _extract_and_hide_parents()
+    
+    if not parent_data:
+        log.info("Plugin: No parent samples found. Skipping merge.")
+        return
+
+    # Phase 2: Get headers for the metrics we want to transfer
+    mad_headers = _extract_mad_headers()
+
+    # Phase 3: The Left Join
+    _merge_parent_data_into_children(parent_data, mad_headers)
+
+
+# ------------------------------------------------------------------------------
+# HELPER FUNCTIONS (The "Elegance" part)
+# ------------------------------------------------------------------------------
+
+def _extract_and_hide_parents() -> Dict[str, Dict]:
+    """Finds samples matching the Parent Regex, extracts data, and deletes them from report."""
+    parent_data = {}
+    removed_count = 0
+
+    # Iterate over a list(keys) because we will modify the dictionary size during iteration
+    for section_key, samples_dict in list(report.general_stats_data.items()):
+        for sample_group in list(samples_dict.keys()):
+            sample_name = str(sample_group)
+
+            # Check if this is a parent (e.g., no hyphens)
+            if IS_PARENT_REGEX.match(sample_name):
+                
+                # Init storage
+                if sample_name not in parent_data:
+                    parent_data[sample_name] = {}
+
+                # Harvest data from all rows
+                for row in samples_dict[sample_group]:
+                    if hasattr(row, 'data') and row.data:
+                        parent_data[sample_name].update(row.data)
+                
+                # Remove from report
+                del samples_dict[sample_group]
+                removed_count += 1
+
+        # Clean up empty sections
+        if not samples_dict:
+            del report.general_stats_data[section_key]
+            if section_key in report.general_stats_headers:
+                del report.general_stats_headers[section_key]
+
+    if removed_count > 0:
+        log.info(f"Plugin: Extracted and hid {removed_count} parent sample entries.")
+    
+    return parent_data
+
+
+def _extract_mad_headers() -> OrderedDict:
+    """Finds MAD headers in multiomics section, removes them there, returns them."""
+    mad_headers = OrderedDict()
+    
+    # Find the source section
+    multiomics_section_key = next(
+        (k for k in report.general_stats_headers if 'multiomic' in str(k).lower()), 
+        None
+    )
+
+    if multiomics_section_key:
+        headers_dict = report.general_stats_headers[multiomics_section_key]
+        
+        # Copy matching headers
+        for key_str in MAD_METRIC_KEYS:
+            # Check for Key object or String matches
+            col_key = ColumnKey(key_str)
+            if col_key in headers_dict:
+                mad_headers[col_key] = headers_dict[col_key].copy()
+                del headers_dict[col_key] # Remove from source
+            elif key_str in headers_dict:
+                mad_headers[ColumnKey(key_str)] = headers_dict[key_str].copy()
+                del headers_dict[key_str] # Remove from source
+
+        # Also scrub the data from the multiomics section to be clean
+        if multiomics_section_key in report.general_stats_data:
+            for _, rows in report.general_stats_data[multiomics_section_key].items():
+                for row in rows:
+                    if hasattr(row, 'data') and row.data:
+                        for k in list(row.data.keys()):
+                            if str(k) in MAD_METRIC_KEYS:
+                                del row.data[k]
+
+    # Fallback: Create defaults if missing
+    if not mad_headers:
+        log.warning("Plugin: MAD headers not found. Using defaults.")
+        mad_headers[ColumnKey('MAD of log ratios')] = {
+            'title': 'MAD',
+            'description': 'MAD QC: Median Absolute Deviation of log ratios',
+            'format': '{:.4f}',
+            'scale': 'RdYlGn',
+            'namespace': 'multiomics'
+        }
+        mad_headers[ColumnKey('Pearson correlation')] = {
+            'title': 'Pearson',
+            'description': 'MAD QC: Pearson correlation coefficient',
+            'min': 0, 'max': 1, 'format': '{:.4f}', 'scale': 'RdYlGn', 'namespace': 'multiomics'
+        }
+        mad_headers[ColumnKey('Spearman correlation')] = {
+            'title': 'Spearman',
+            'description': 'MAD QC: Spearman correlation coefficient',
+            'min': 0, 'max': 1, 'format': '{:.4f}', 'scale': 'RdYlGn', 'namespace': 'multiomics'
+        }
+        mad_headers[ColumnKey('SD of log ratios')] = {
+            'title': 'SD',
+            'description': 'MAD QC: Standard Deviation of log ratios',
+            'format': '{:.4f}', 'scale': 'RdYlGn', 'namespace': 'multiomics'
+        }
+        mad_headers[ColumnKey('num_pairs_evaluated')] = {
+            'title': 'Pairs',
+            'description': 'MAD QC: Number of pairs evaluated',
+            'format': '{:,.0f}', 'scale': 'Blues', 'namespace': 'multiomics'
+        }
+            
+    return mad_headers
+
+
+def _merge_parent_data_into_children(parent_data: Dict, headers: OrderedDict):
+    """Iterates all child samples and merges parent data if a match is found."""
+    
+    match_count = 0
+    # Track where we've added headers so we only do it once per section
+    sections_with_headers_added = set()
+
+    for section_key, samples_dict in report.general_stats_data.items():
+        
+        # Skip multiomics section (source)
+        if 'multiomic' in str(section_key).lower():
+            continue
+
+        section_modified = False
+
+        for sample_group, rows in samples_dict.items():
+            sample_name = str(sample_group)
+            
+            # Logic: Child 'test1-1' -> Parent 'test1'
+            # Adjust this split logic if your naming convention changes!
+            base_name = sample_name.split('-')[0]
+
+            if base_name in parent_data:
+                source_stats = parent_data[base_name]
+                
+                # Check for merge collision (Child already has this data?)
+                # We check the first row for any MAD metric key
+                has_mad_data = False
+                for row in rows:
+                    if hasattr(row, 'data') and row.data:
+                        for mad_key in MAD_METRIC_KEYS:
+                            if ColumnKey(mad_key) in row.data or mad_key in row.data:
+                                has_mad_data = True
+                                break
+                        if has_mad_data:
+                            break
+                
+                if has_mad_data:
+                    continue # Skip, already merged
+
+                # Perform Merge
+                for row in rows:
+                    if hasattr(row, 'data') and row.data:
+                        # Update child row with parent data (only new keys)
+                        for k, v in source_stats.items():
+                            if k not in row.data:
+                                row.data[k] = v
+                
+                match_count += 1
+                section_modified = True
+
+        # If we merged data in this section, we must add the headers
+        if section_modified and section_key not in sections_with_headers_added:
+            if section_key in report.general_stats_headers:
+                # Merge dictionaries
+                report.general_stats_headers[section_key].update(headers)
+                sections_with_headers_added.add(section_key)
+
+    log.info(f"Plugin: Left-joined stats into {match_count} child samples.")
