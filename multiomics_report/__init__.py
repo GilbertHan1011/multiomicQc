@@ -48,9 +48,6 @@ def before_config():
         config.fn_clean_exts = []
     
     # Add RNA-seq specific extensions to clean
-    # CRITICAL: Order matters! Patterns are checked in order, and the FIRST match wins.
-    # More specific patterns MUST come before less specific ones.
-    # Example: '_fastp' must come before '.json' so 'test1_fastp.json' -> 'test1' not 'test1_fastp'
     extra_exts = [
         '_Log.final.out',  # Most specific first
         '.metrics.tsv',    # More specific before '.metrics'
@@ -64,35 +61,6 @@ def before_config():
     config.fn_clean_exts[0:0] = extra_exts
     
     log.debug(f"Added {len(extra_exts)} patterns to fn_clean_exts")
-    
-    # --- 2. Dynamic Sample Renaming ---
-    # Find and parse the sample annotation CSV
-    annotation_file = find_sample_sheet()
-    
-    if annotation_file:
-        new_rules_dict = parse_sample_sheet_dict(annotation_file)
-        
-        # Generate a TSV file for --replace-names
-        # This is the most reliable way to rename samples in MultiQC
-        tsv_path = generate_rename_tsv(new_rules_dict, annotation_file)
-        
-        if tsv_path:
-            # Load the rename file using MultiQC's built-in function
-            # This is what --replace-names does internally
-            try:
-                config.load_replace_names(tsv_path)
-                print(f"Plugin Info: Loaded sample renaming file with {len(new_rules_dict)} rules from {tsv_path}")
-                # Print first few examples
-                for i, (old, new) in enumerate(list(new_rules_dict.items())[:3]):
-                    print(f"  {old} -> {new}")
-                if len(new_rules_dict) > 3:
-                    print(f"  ... and {len(new_rules_dict) - 3} more")
-            except Exception as e:
-                print(f"Plugin Error: Failed to load rename file: {e}")
-                import traceback
-                traceback.print_exc()
-    else:
-        print(f"Plugin Warning: Sample annotation file not found. Skipping sample renaming.")
     
     # Set default config for modules
     for module_name, module_config in MODULE_DEFAULTS.items():
@@ -114,9 +82,35 @@ def before_config():
 
     final_patterns = list(config.fn_clean_exts) if hasattr(config, 'fn_clean_exts') else []
 
-    log.info(f"Plugin: Set fn_clean_exts to {len(final_patterns)} patterns total")
-    log.debug(f"Plugin: First 10 patterns: {final_patterns[:10]}")
-    log.debug(f"Plugin: Your custom patterns are at positions: {[final_patterns.index(p) for p in extra_exts if p in final_patterns]}")
+    if not hasattr(config, 'table_sample_merge') or config.table_sample_merge is None:
+        config.table_sample_merge = {}
+
+    # Define the Regex Logic for table_sample_merge
+    # Pattern matches: _run1, _run2, _1, _2, etc. (any _run or _ followed by digits at end)
+    # Processing: When a sample name matches, the pattern is REMOVED to get the base name
+    # Example: 'test1_run1' -> matches '_run1' -> removes it -> 'test1'
+    #          'test1_run2' -> matches '_run2' -> removes it -> 'test1'
+    #          Both 'test1_run1' and 'test1_run2' are grouped as 'test1'
+    # NOTE: Using empty string as label so it doesn't appear in the sample name
+    # The group name will be just the base name (e.g., 'test1', 'test2')
+    merge_rule = {
+        '': [  # Empty label - won't be appended to group name
+            {
+                'type': 'regex',
+                'pattern': r'(_run|_)\d+$'  # Matches _run1, _run2, _1, _2, etc.
+            }
+        ]
+    }
+    
+    # Apply the rule (merge with existing config if any)
+    existing_merge = dict(config.table_sample_merge) if config.table_sample_merge else {}
+    merged_config = {**merge_rule, **existing_merge}  # Our rule takes precedence
+    config.update({'table_sample_merge': merged_config})
+    
+    log.info(f"Plugin: Configured table_sample_merge with regex pattern: '(_run|_)\\d+$' (no label)")
+    if config.verbose:
+        log.debug(f"Plugin: This will group samples like 'test1_run1' and 'test1_run2' as 'test1'")
+        log.debug(f"Plugin: Group names will be just the base name (test1, test2) without label")
 
 
 def config_loaded():
@@ -153,12 +147,10 @@ def execution_start():
         "rsem": [
             {
                 "fn": "*.json",
-                "exclude": None,
                 'contents': 'num_genes_detected'
             },
             {
                 "fn": "*.cnt",
-                "exclude": None,
                 'contents': 'num_genes_detected',
             }
         ],
@@ -236,7 +228,7 @@ def parse_sample_sheet_dict(filepath):
                 
                 # Construct the source name (what MultiQC will see after cleaning)
                 # e.g., 'test1_1_fastp.json' becomes 'test1_1' after cleaning, then we rename to 'test1'
-                source_name = f"{target_name}_{run_id}"
+                source_name = f"{target_name}_run{run_id}"
                 
                 # Add the renaming rule: source -> target
                 rules[source_name] = target_name
