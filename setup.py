@@ -26,6 +26,7 @@ setup(
         'multiqc.hooks.v1': [
             # Hook before_config to configure sample renaming (runs before file search)
             'before_config = multiomics_report:before_config',
+            'config_loaded = multiomics_report:config_loaded',
             # Hook execution_start to load search patterns
             'execution_start = multiomics_report:execution_start',
             'after_modules = multiomics_report:multiomics_report_after_modules',
