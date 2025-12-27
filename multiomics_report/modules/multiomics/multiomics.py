@@ -1,8 +1,11 @@
 import json
+import logging
 from collections import OrderedDict
-from multiqc.modules.base_module import BaseMultiqcModule
+from multiqc.base_module import BaseMultiqcModule, ModuleNoSamplesFound
 from multiqc import config
-from multiqc.plots import bar
+from multiqc.plots import bargraph
+
+log = logging.getLogger(__name__)
 
 class MultiqcModule(BaseMultiqcModule):
     def __init__(self):
@@ -26,21 +29,34 @@ class MultiqcModule(BaseMultiqcModule):
         # -----------------------------------------------------------
         
         # A. Parse RNA-SeQC (TSV)
-        # Matches 'rnaseq/rnaseqqc' from your execution_start
-        for f in self.find_log_files('rnaseq/rnaseqqc'):
+        # Matches 'multiomics/rnaseqqc' from your execution_start
+        for f in self.find_log_files('multiomics_report/rnaseqqc'):
             self.parse_rnaseqc_tsv(f)
 
         # B. Parse Gene Types (JSON)
-        # Matches 'rnaseq/gene_type_counts' from your execution_start
-        for f in self.find_log_files('rnaseq/gene_type_counts'):
+        # Matches 'multiomics/gene_type_counts' from your execution_start
+        for f in self.find_log_files('multiomics_report/gene_type_counts'):
             self.parse_genetype_json(f)
 
         # C. Parse RSEM Genes (JSON)
-        # Matches 'rnaseq/rsem' from your execution_start
-        for f in self.find_log_files('rnaseq/rsem'):
+        # Matches 'multiomics/rsem' from your execution_start
+        for f in self.find_log_files('multiomics_report/rsem'):
             self.parse_rsem_json(f)
 
-        for f in self.find_log_files('rnaseq/mad_rna'):
+        # Debug: Log search for MAD files
+        log.info("[MAD DEBUG] Searching for files matching 'multiomics_report/mad_rna' pattern...")
+        mad_files = list(self.find_log_files('multiomics_report/mad_rna'))
+        log.info(f"[MAD DEBUG] Found {len(mad_files)} file(s) matching 'multiomics_report/mad_rna' pattern")
+        
+        if len(mad_files) == 0:
+            # Additional debugging: check what files are available
+            log.warning("[MAD DEBUG] No files found! This could mean:")
+            log.warning("[MAD DEBUG]   1. No files match the regex pattern: '.*summary_metrics\\.json$'")
+            log.warning("[MAD DEBUG]   2. Files match filename but don't contain 'MAD of log ratios' in first 10 lines")
+            log.warning("[MAD DEBUG]   3. Files are in directories not searched by MultiQC")
+        
+        for f in mad_files:
+            log.info(f"[MAD DEBUG] Processing MAD file: {f.get('fn', 'unknown')} (sample: {f.get('s_name', 'unknown')})")
             self.parse_mad_json(f)
         # -----------------------------------------------------------
         # 4. FILTERING & EXIT
@@ -50,15 +66,29 @@ class MultiqcModule(BaseMultiqcModule):
         self.genetype_data = self.ignore_samples(self.genetype_data)
         self.rsem_data = self.ignore_samples(self.rsem_data)
         self.mad_data = self.ignore_samples(self.mad_data)
-        # If no data found at all, raise warning
-        if len(self.rnaseqc_data) == 0 and len(self.genetype_data) == 0:
-            raise UserWarning
+        # If no data found at all, raise ModuleNoSamplesFound
+        if (len(self.rnaseqc_data) == 0 and len(self.genetype_data) == 0 and 
+            len(self.rsem_data) == 0 and len(self.mad_data) == 0):
+            raise ModuleNoSamplesFound
 
         # -----------------------------------------------------------
         # 5. GENERATE REPORT SECTIONS
         # -----------------------------------------------------------
+        # Add software version (required by MultiQC)
+        self.add_software_version(None)
+        
         self.write_general_stats()
         self.write_gene_type_plot()
+        
+        # Write data file (MUST be at the end, after all sections are added)
+        # Combine all data into one dict for writing
+        all_data = {
+            'rnaseqc': self.rnaseqc_data,
+            'genetype': self.genetype_data,
+            'rsem': self.rsem_data,
+            'mad': self.mad_data
+        }
+        self.write_data_file(all_data, "multiqc_multiomics")
 
     # ===============================================================
     # PARSING FUNCTIONS
@@ -67,7 +97,7 @@ class MultiqcModule(BaseMultiqcModule):
     def parse_rnaseqc_tsv(self, f):
         """ Parses the RNA-SeQC TSV file (Key [tab] Value) """
         parsed_data = {}
-        for line in f['content'].splitlines():
+        for line in f['f'].splitlines():
             s = line.split('\t')
             if len(s) > 1:
                 key = s[0].strip()
@@ -84,7 +114,7 @@ class MultiqcModule(BaseMultiqcModule):
     def parse_genetype_json(self, f):
         """ Parses the nested Gene Type JSON file """
         try:
-            data = json.loads(f['content'])
+            data = json.loads(f['f'])
             # The file structure is {"gene_type_count": {...}}
             if "gene_type_count" in data:
                 self.genetype_data[f['s_name']] = data["gene_type_count"]
@@ -94,7 +124,7 @@ class MultiqcModule(BaseMultiqcModule):
     def parse_rsem_json(self, f):
         """ Parses the RSEM JSON file """
         try:
-            data = json.loads(f['content'])
+            data = json.loads(f['f'])
             if "num_genes_detected" in data:
                 self.rsem_data[f['s_name']] = data
         except Exception as e:
@@ -103,29 +133,44 @@ class MultiqcModule(BaseMultiqcModule):
     def parse_mad_json(self, f):
         """ Parses the MAD QC summary JSON file """
         try:
-            data = json.loads(f['content'])
+            log.debug(f"[MAD DEBUG] Parsing file: {f.get('fn', 'unknown')}")
+            file_content = f.get('f', '')
+            log.debug(f"[MAD DEBUG] File content length: {len(file_content)} chars")
+            log.debug(f"[MAD DEBUG] First 200 chars of content: {file_content[:200]}")
+            
+            data = json.loads(file_content)
+            log.debug(f"[MAD DEBUG] JSON parsed successfully. Keys: {list(data.keys())[:10]}")
             
             # Validation: specific key check
             if "MAD of log ratios" in data:
+                log.info(f"[MAD DEBUG] Found 'MAD of log ratios' key in file {f.get('fn', 'unknown')}")
                 # Use the clean sample name provided by MultiQC
                 s_name = f['s_name']
                 
                 # Check if this sample already has data (handling duplicates)
                 if s_name in self.mad_data:
-                    self.logger.debug(f"Duplicate sample found for MAD QC: {s_name}")
+                    log.debug(f"[MAD DEBUG] Duplicate sample found for MAD QC: {s_name}")
                 
                 # Also check for status field to skip invalid files
                 if "status" in data and data["status"] == "No pairs available for aggregation":
                     # Skip files with no pairs
+                    log.warning(f"[MAD DEBUG] Skipping file {f.get('fn', 'unknown')}: No pairs available")
                     return
                 
                 self.mad_data[s_name] = data
                 self.add_data_source(f, section='mad_qc')
+                log.info(f"[MAD DEBUG] Successfully added MAD data for sample: {s_name}")
+            else:
+                log.warning(f"[MAD DEBUG] File {f.get('fn', 'unknown')} does not contain 'MAD of log ratios' key")
+                log.debug(f"[MAD DEBUG] Available keys in JSON: {list(data.keys())}")
                 
         except json.JSONDecodeError as e:
-            self.logger.warning(f"Failed to parse MAD QC JSON file {f['fn']}: {e}")
+            log.warning(f"[MAD DEBUG] Failed to parse MAD QC JSON file {f.get('fn', 'unknown')}: {e}")
+            log.debug(f"[MAD DEBUG] Content preview: {f.get('f', '')[:500]}")
         except Exception as e:
-            self.logger.warning(f"Error parsing MAD QC file {f['fn']}: {e}")
+            log.warning(f"[MAD DEBUG] Error parsing MAD QC file {f.get('fn', 'unknown')}: {e}")
+            import traceback
+            log.debug(f"[MAD DEBUG] Traceback: {traceback.format_exc()}")
 
     # ===============================================================
     # REPORT WRITING
@@ -159,11 +204,38 @@ class MultiqcModule(BaseMultiqcModule):
             'format': '{:,.0f}',
             'scale': 'OrRd'
         }
+        
+        # 3. Define Headers for MAD Metrics
+        mad_headers = OrderedDict()
+        mad_headers['MAD of log ratios'] = {
+            'title': 'MAD',
+            'description': 'MAD QC: Median Absolute Deviation of log ratios',
+            'format': '{:.4f}',
+            'scale': 'RdYlGn',
+            'hidden': False
+        }
+        mad_headers['Pearson correlation'] = {
+            'title': 'Pearson',
+            'description': 'MAD QC: Pearson correlation coefficient',
+            'min': 0,
+            'max': 1,
+            'format': '{:.4f}',
+            'scale': 'RdYlGn'
+        }
+        mad_headers['Spearman correlation'] = {
+            'title': 'Spearman',
+            'description': 'MAD QC: Spearman correlation coefficient',
+            'min': 0,
+            'max': 1,
+            'format': '{:.4f}',
+            'scale': 'RdYlGn'
+        }
 
-        # 3. Add to General Stats
-        # We call this twice to merge data from different dictionaries
+        # 4. Add to General Stats
+        # We call this multiple times to merge data from different dictionaries
         self.general_stats_addcols(self.rnaseqc_data, rnaseqc_headers)
         self.general_stats_addcols(self.rsem_data, rsem_headers)
+        self.general_stats_addcols(self.mad_data, mad_headers)
 
     def write_gene_type_plot(self):
         """ Creates a Stacked Bar Plot for Gene Types """
@@ -186,5 +258,5 @@ class MultiqcModule(BaseMultiqcModule):
             name='Gene Types',
             anchor='my_rnaseq_genetypes',
             description='Counts of different gene biotypes (protein_coding, rRNA, etc.)',
-            plot=bar.plot(self.genetype_data, cats, pconfig)
+            plot=bargraph.plot(self.genetype_data, cats, pconfig)
         )

@@ -33,7 +33,6 @@ def before_config():
     # Strip common extensions so filenames become clean sample names
     # e.g., 'test1_1_fastp.json' -> 'test1_1' (after _fastp pattern matches)
     fn_clean_enabled = getattr(config, 'fn_clean_sample_names', True)
-    log.info(f"Plugin: fn_clean_sample_names = {fn_clean_enabled}")
     if not fn_clean_enabled:
         log.warning(
             "Plugin: fn_clean_sample_names is False! "
@@ -50,6 +49,7 @@ def before_config():
     # Add RNA-seq specific extensions to clean
     extra_exts = [
         '_Log.final.out',  # Most specific first
+        '.summary_metrics.json',
         '.metrics.tsv',    # More specific before '.metrics'
         '.metrics',
         '.isoforms',
@@ -86,13 +86,6 @@ def before_config():
         config.table_sample_merge = {}
 
     # Define the Regex Logic for table_sample_merge
-    # Pattern matches: _run1, _run2, _1, _2, etc. (any _run or _ followed by digits at end)
-    # Processing: When a sample name matches, the pattern is REMOVED to get the base name
-    # Example: 'test1_run1' -> matches '_run1' -> removes it -> 'test1'
-    #          'test1_run2' -> matches '_run2' -> removes it -> 'test1'
-    #          Both 'test1_run1' and 'test1_run2' are grouped as 'test1'
-    # NOTE: Using empty string as label so it doesn't appear in the sample name
-    # The group name will be just the base name (e.g., 'test1', 'test2')
     merge_rule = {
         '': [  # Empty label - won't be appended to group name
             {
@@ -106,11 +99,6 @@ def before_config():
     existing_merge = dict(config.table_sample_merge) if config.table_sample_merge else {}
     merged_config = {**merge_rule, **existing_merge}  # Our rule takes precedence
     config.update({'table_sample_merge': merged_config})
-    
-    log.info(f"Plugin: Configured table_sample_merge with regex pattern: '(_run|_)\\d+$' (no label)")
-    if config.verbose:
-        log.debug(f"Plugin: This will group samples like 'test1_run1' and 'test1_run2' as 'test1'")
-        log.debug(f"Plugin: Group names will be just the base name (test1, test2) without label")
 
 
 def config_loaded():
@@ -136,15 +124,17 @@ def execution_start():
     from multiqc.utils.util_functions import update_dict
     
     # Register search patterns
+    # IMPORTANT: Pattern keys must start with the registered module name 'multiomics_report' 
+    # (as defined in setup.py entry_points) or MultiQC will filter them out
     search_patterns = {
-        'rnaseq/rnaseqqc': {
+        'multiomics_report/rnaseqqc': {
             'fn': '*metrics.tsv',
         },
-        'rnaseq/gene_type_counts': {
+        'multiomics_report/gene_type_counts': {
             'fn': '*.json',
             'contents': 'gene_type_count'
         },
-        "rsem": [
+        "multiomics_report/rsem": [
             {
                 "fn": "*.json",
                 'contents': 'num_genes_detected'
@@ -154,9 +144,10 @@ def execution_start():
                 'contents': 'num_genes_detected',
             }
         ],
-        'rnaseq/mad_rna' : {
-            'fn': '*summary_metrics.json', 
-            'contents': 'MAD of log ratios'
+        'multiomics_report/mad_rna' : {
+            'fn_re': r'.*summary_metrics\.json$',  # Matches only *summary_metrics.json files
+            'contents': 'MAD of log ratios',  # Additional content check for specificity
+            'num_lines': 10  # Only check first 10 lines for JSON content
         }
     }
     # Merge search patterns into config.sp (adds to beginning to supersede defaults)
