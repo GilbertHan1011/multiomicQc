@@ -22,7 +22,7 @@ MAD_METRIC_KEYS = [
 ]
 
 # 2. Regex to identify Parent Samples (Group B) vs Child Samples (Group A)
-# Parents do NOT have a hyphen (e.g., 'test', 'apple')
+# Parents do NOT have a hyphen
 IS_PARENT_REGEX = re.compile(r'^[^-]+$')
 
 # 3. Defaults for Config
@@ -96,7 +96,11 @@ def execution_start():
     
     search_patterns = {
         'multiomics_report/rnaseqqc': {'fn': '*metrics.tsv'},
-        'multiomics_report/gene_type_counts': {'fn': '*.json', 'contents': 'gene_type_count'},
+        'multiomics_report/gene_type_counts': {
+            'fn': '*.json',  # More specific filename pattern
+            'contents': 'gene_type_count',
+            'num_lines': 50  # Check more lines for JSON files that might be formatted
+        },
         "multiomics_report/rsem": [
             {'fn': "*.json", 'contents': 'num_genes_detected'},
             {'fn': "*.cnt", 'contents': 'num_genes_detected'},
