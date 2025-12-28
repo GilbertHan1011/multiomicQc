@@ -197,18 +197,25 @@ class MultiqcModule(BaseMultiqcModule):
         
         # 1. Define Headers for RNA-SeQC Metrics
         rnaseqc_headers = OrderedDict()
-        rnaseqc_headers['Mapping Rate'] = {
-            'title': 'Map Rate',
-            'description': 'RNA-SeQC: Mapping Rate',
-            'max': 1, 'min': 0, 'suffix': '%',
-            'scale': 'PuBu',
-            'format': '{:,.1%}' # 0.41 -> 41.0%
-        }
         rnaseqc_headers['Exonic Rate'] = {
             'title': 'Exonic',
             'description': 'RNA-SeQC: Exonic Rate',
             'max': 1, 'min': 0, 'suffix': '%',
             'scale': 'Greens',
+            'format': '{:,.1%}'
+        }
+        rnaseqc_headers['Intergenic Rate'] = {
+            'title': 'Intergenic',
+            'description': 'RNA-SeQC: Intergenic Rate',
+            'max': 1, 'min': 0, 'suffix': '%',
+            'scale': 'Oranges',
+            'format': '{:,.1%}'
+        }
+        rnaseqc_headers['rRNA Rate'] = {
+            'title': 'rRNA',
+            'description': 'RNA-SeQC: rRNA Rate',
+            'max': 1, 'min': 0, 'suffix': '%',
+            'scale': 'Reds',
             'format': '{:,.1%}'
         }
         
@@ -220,20 +227,6 @@ class MultiqcModule(BaseMultiqcModule):
             'format': '{:,.0f}',
             'scale': 'OrRd'
         }
-        
-        # 3. Calculate and add protein_coding percentage from gene type counts
-        protein_coding_data = self._calculate_protein_coding_percentage()
-        genetype_headers = OrderedDict()
-        if protein_coding_data:
-            genetype_headers['protein_coding_percentage'] = {
-                'title': '% Protein Coding',
-                'description': 'Percentage of protein coding genes among all detected gene types',
-                'min': 0,
-                'max': 100,
-                'suffix': '%',
-                'format': '{:,.1f}',
-                'scale': 'YlGn'
-            }
         
         # 4. Define Headers for MAD Metrics
         mad_headers = OrderedDict()
@@ -252,21 +245,11 @@ class MultiqcModule(BaseMultiqcModule):
             'format': '{:.4f}',
             'scale': 'RdYlGn'
         }
-        mad_headers['Spearman correlation'] = {
-            'title': 'Spearman',
-            'description': 'MAD QC: Spearman correlation coefficient',
-            'min': 0,
-            'max': 1,
-            'format': '{:.4f}',
-            'scale': 'RdYlGn'
-        }
 
         # 5. Add to General Stats
         # We call this multiple times to merge data from different dictionaries
         self.general_stats_addcols(self.rnaseqc_data, rnaseqc_headers)
         self.general_stats_addcols(self.rsem_data, rsem_headers)
-        if protein_coding_data:
-            self.general_stats_addcols(protein_coding_data, genetype_headers)
         self.general_stats_addcols(self.mad_data, mad_headers)
 
     def write_gene_type_plot(self):

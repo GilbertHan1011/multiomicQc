@@ -49,7 +49,7 @@ def before_config():
 
     extra_exts = [
         '_Log.final.out', '.summary_metrics.json', '.metrics.tsv', 
-        '.metrics', '.isoforms', '.genes', '_fastp'
+        '.metrics', '.isoforms', '.genes', '_fastp',"_gene_type_count"
     ]
     # Prepend to ensure higher priority
     config.fn_clean_exts[0:0] = extra_exts
