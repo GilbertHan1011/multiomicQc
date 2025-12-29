@@ -49,7 +49,13 @@ def before_config():
 
     extra_exts = [
         '_Log.final.out', '.summary_metrics.json', '.metrics.tsv', 
-        '.metrics', '.isoforms', '.genes', '_fastp',"_gene_type_count"
+        '.metrics', '.isoforms', 
+        '.genes', '_fastp',"_gene_type_count",
+        "_coverage.tsv", "_peakcount.txt", "_jaccard.txt",
+        {'type': 'remove', 'pattern': 'sambamba_markdup_'},  # Remove prefix
+        {'type': 'remove', 'pattern': 'bowtie2_'},            # Remove prefix
+        {'type': 'remove', 'pattern': '.err'},                 # Remove suffix
+        {'type': 'remove', 'pattern': 'frip_'}, 
     ]
     # Prepend to ensure higher priority
     config.fn_clean_exts[0:0] = extra_exts
@@ -95,9 +101,12 @@ def execution_start():
     from multiqc.utils.util_functions import update_dict
     
     search_patterns = {
-        'multiomics_report/rnaseqqc': {'fn': '*metrics.tsv'},
+        'multiomics_report/rnaseqqc': {
+            'fn': '*metrics.tsv', 
+            'contents': 'Duplicate Rate of Mapped'
+            },
         'multiomics_report/gene_type_counts': {
-            'fn': '*.json',  # More specific filename pattern
+            'fn': '*gene_type_count.json',  # More specific filename pattern
             'contents': 'gene_type_count',
             'num_lines': 50  # Check more lines for JSON files that might be formatted
         },
@@ -109,107 +118,15 @@ def execution_start():
             'fn_re': r'.*summary_metrics\.json$',
             'contents': 'MAD of log ratios',
             'num_lines': 10
-        }
+        },
+        'multiomics_report/peak_coverage': {'fn': "*_coverage.tsv"},
+        'multiomics_report/peak_count' : {'fn': "*_peakcount.txt"},
+        'multiomics_report/jacarrd' : {'fn' : "*_jaccard.txt"},
+        'multiomics_report/fraglen' : {'fn': "*_fraglen.txt"},
+        'multiomics_report/frip' : {'fn': "frip*.tsv"},
     }
     config.sp = update_dict(config.sp, search_patterns, add_in_the_beginning=True)
 
-def find_sample_sheet():
-    """
-    Locate the sample annotation CSV file with priority logic.
-    Priority: 1) Environment variable, 2) Analysis directories, 3) Output directory, 4) Current directory
-    """
-    # Check environment variable first (set by Snakemake)
-    if 'MULTIQC_SAMPLE_SHEET' in os.environ:
-        env_path = os.environ['MULTIQC_SAMPLE_SHEET']
-        if os.path.exists(env_path):
-            return env_path
-    
-    # Check in analysis directories (where MultiQC searches for files)
-    analysis_dirs = getattr(config, 'analysis_dir', None)
-    if analysis_dirs:
-        # Handle both list and single string
-        if isinstance(analysis_dirs, str):
-            analysis_dirs = [analysis_dirs]
-        elif not isinstance(analysis_dirs, list):
-            analysis_dirs = []
-        
-        # Check each analysis directory for sample_annotation.csv
-        for analysis_dir in analysis_dirs:
-            if isinstance(analysis_dir, str) and os.path.exists(analysis_dir):
-                potential_path = os.path.join(analysis_dir, 'sample_annotation.csv')
-                if os.path.exists(potential_path):
-                    return potential_path
-    
-    # Check in the output directory (where we copy the file)
-    output_dir = getattr(config, 'output_dir', None)
-    if output_dir and isinstance(output_dir, str) and os.path.exists(output_dir):
-        potential_path = os.path.join(output_dir, 'sample_annotation.csv')
-        if os.path.exists(potential_path):
-            return potential_path
-    
-    # Check in current working directory as last resort
-    potential_path = os.path.abspath('sample_annotation.csv')
-    if os.path.exists(potential_path):
-        return potential_path
-    
-    return None
-
-def parse_sample_sheet_dict(filepath):
-    """
-    Reads the sample annotation CSV and returns a dictionary of renaming rules.
-    
-    Returns: {'test1_1': 'test1', 'test1_2': 'test1', ...}
-    
-    This format is what MultiQC's config.sample_names_replace expects.
-    """
-    rules = {}
-    try:
-        with open(filepath, 'r') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                # Get the target name (the final merged name)
-                target_name = row.get('sample_name', '').strip()
-                
-                # Get the run number
-                run_id = row.get('run', '').strip()
-                
-                # Skip if either is missing
-                if not target_name or not run_id:
-                    continue
-                
-                # Construct the source name (what MultiQC will see after cleaning)
-                # e.g., 'test1_1_fastp.json' becomes 'test1_1' after cleaning, then we rename to 'test1'
-                source_name = f"{target_name}_run{run_id}"
-                
-                # Add the renaming rule: source -> target
-                rules[source_name] = target_name
-                
-    except Exception as e:
-        print(f"Plugin Error: Failed to parse sample sheet {filepath}: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    return rules
-
-def generate_rename_tsv(rules_dict, annotation_file):
-    """
-    Generates a TSV file for MultiQC's --replace-names option.
-    Returns the path to the generated TSV file.
-    """
-    try:
-        # Create TSV file in the same directory as the annotation file
-        tsv_path = annotation_file.replace('.csv', '_multiqc_rename.tsv')
-        
-        with open(tsv_path, 'w') as f:
-            for source, target in rules_dict.items():
-                f.write(f"{source}\t{target}\n")
-        
-        return tsv_path
-    except Exception as e:
-        print(f"Plugin Error: Failed to generate rename TSV: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
 
 def multiomics_report_after_modules():
     """
@@ -231,6 +148,8 @@ def multiomics_report_after_modules():
 
     # Phase 3: The Left Join
     _merge_parent_data_into_children(parent_data, mad_headers)
+
+    _add_sambamba_calculated_metrics()
 
 
 # ------------------------------------------------------------------------------
@@ -401,3 +320,145 @@ def _merge_parent_data_into_children(parent_data: Dict, headers: OrderedDict):
                 sections_with_headers_added.add(section_key)
 
     log.info(f"Plugin: Left-joined stats into {match_count} child samples.")
+
+
+
+def _add_sambamba_calculated_metrics():
+    """
+    Add calculated metrics from sambamba markdup data:
+    - nrf_sm: Non-Redundant Fraction = 100 - duplicate_rate
+    - duplicate_read: Number of duplicate reads
+    - unique_read: (sorted_end_pairs * 2 - duplicate_reads) / 2
+    - total_reads: Number of paired-end fragments seen by Sambamba
+    """
+    # Find Sambamba module section in general_stats_data
+    sambamba_section_key = None
+    for section_key in report.general_stats_data.keys():
+        section_str = str(section_key).lower()
+        if 'sambamba' in section_str or 'markdup' in section_str:
+            sambamba_section_key = section_key
+            break
+    
+    if not sambamba_section_key:
+        log.debug("Plugin: Sambamba module not found in general stats")
+        return
+    
+    log.info(f"Plugin: Found Sambamba section: {sambamba_section_key}")
+    
+    # Process each sample in the sambamba section
+    samples_dict = report.general_stats_data.get(sambamba_section_key, {})
+    modified_count = 0
+    
+    for sample_group, rows in samples_dict.items():
+        sample_name = str(sample_group)
+        
+        # Extract data from the first row (usually there's only one row per sample)
+        sample_data = {}
+        for row in rows:
+            if hasattr(row, 'data') and row.data:
+                sample_data.update(row.data)
+        
+        if not sample_data:
+            continue
+        
+        # Calculate nrf_sm = 100 - duplicate_rate
+        if "duplicate_rate" in sample_data:
+            try:
+                duplicate_rate = float(sample_data["duplicate_rate"])
+                nrf_sm = 100.0 - duplicate_rate
+                # Add to all rows for this sample
+                for row in rows:
+                    if hasattr(row, 'data') and row.data:
+                        row.data["nrf_sm"] = nrf_sm
+                log.debug(f"Plugin: Added nrf_sm for {sample_name}: {nrf_sm:.2f}%")
+            except (ValueError, TypeError) as e:
+                log.debug(f"Plugin: Could not calculate nrf_sm for {sample_name}: {e}")
+        
+        # Add duplicate_reads as duplicate_read (if not already present)
+        if "duplicate_reads" in sample_data and "duplicate_read" not in sample_data:
+            for row in rows:
+                if hasattr(row, 'data') and row.data:
+                    row.data["duplicate_read"] = sample_data["duplicate_reads"]
+            log.debug(f"Plugin: Added duplicate_read for {sample_name}: {sample_data['duplicate_reads']}")
+        
+        # Calculate unique_read
+        if "sorted_end_pairs" in sample_data and "duplicate_reads" in sample_data:
+            try:
+                sorted_end_pairs = int(sample_data["sorted_end_pairs"])
+                duplicate_reads = int(sample_data["duplicate_reads"])
+                unique_read = (sorted_end_pairs * 2 - duplicate_reads) / 2
+                for row in rows:
+                    if hasattr(row, 'data') and row.data:
+                        row.data["unique_read"] = unique_read
+                log.debug(f"Plugin: Added unique_read for {sample_name}: {unique_read:.0f}")
+            except (ValueError, TypeError) as e:
+                log.debug(f"Plugin: Could not calculate unique_read for {sample_name}: {e}")
+        
+        # Add total_reads (from sorted_end_pairs)
+        if "sorted_end_pairs" in sample_data:
+            try:
+                total_reads = int(sample_data["sorted_end_pairs"])
+                for row in rows:
+                    if hasattr(row, 'data') and row.data:
+                        row.data["total_reads"] = total_reads
+                log.debug(f"Plugin: Added total_reads for {sample_name}: {total_reads}")
+            except (ValueError, TypeError):
+                pass
+        
+        modified_count += 1
+    
+    # Add headers for new metrics
+    if modified_count > 0:
+        _add_sambamba_headers(sambamba_section_key)
+        log.info(f"Plugin: Successfully added calculated sambamba metrics for {modified_count} samples")
+
+
+def _add_sambamba_headers(section_key: SectionKey):
+    """Add headers for calculated sambamba metrics."""
+    if section_key not in report.general_stats_headers:
+        report.general_stats_headers[section_key] = {}
+    
+    headers = report.general_stats_headers[section_key]
+    
+    # nrf_sm header
+    if ColumnKey('nrf_sm') not in headers:
+        headers[ColumnKey('nrf_sm')] = {
+            'title': 'NRF',
+            'description': 'Sambamba: Non-Redundant Fraction (100 - duplicate_rate)',
+            'min': 0,
+            'max': 100,
+            'suffix': '%',
+            'format': '{:,.2f}',
+            'scale': 'RdYlGn',
+            'namespace': 'sambamba'
+        }
+    
+    # duplicate_read header
+    if ColumnKey('duplicate_read') not in headers:
+        headers[ColumnKey('duplicate_read')] = {
+            'title': 'Dup Reads',
+            'description': 'Sambamba: Number of duplicate reads',
+            'format': '{:,.0f}',
+            'scale': 'OrRd',
+            'namespace': 'sambamba'
+        }
+    
+    # unique_read header
+    if ColumnKey('unique_read') not in headers:
+        headers[ColumnKey('unique_read')] = {
+            'title': 'Unique Reads',
+            'description': 'Sambamba: Unique reads ((sorted_end_pairs * 2 - duplicate_reads) / 2)',
+            'format': '{:,.0f}',
+            'scale': 'GnBu',
+            'namespace': 'sambamba'
+        }
+    
+    # total_reads header
+    if ColumnKey('total_reads') not in headers:
+        headers[ColumnKey('total_reads')] = {
+            'title': 'Total Reads',
+            'description': 'Sambamba: Total paired-end fragments (sorted_end_pairs)',
+            'format': '{:,.0f}',
+            'scale': 'Blues',
+            'namespace': 'sambamba'
+        }

@@ -24,6 +24,10 @@ class MultiqcModule(BaseMultiqcModule):
         self.genetype_data = dict()   # Stores gene_type_counts data
         self.rsem_data = dict()       # Stores rsem.genes.json data
         self.mad_data = dict()        # Stores mad_qc.json data
+        self.coverage_data = dict()   # Stores coverage.tsv data
+        self.peak_count_data = dict() # Stores peak count data
+        self.jaccard_data = dict()    # Stores jaccard data
+        self.frip_data = dict()       # Stores FRIP data
         # -----------------------------------------------------------
         # 3. PARSING LOGIC
         # -----------------------------------------------------------
@@ -46,6 +50,30 @@ class MultiqcModule(BaseMultiqcModule):
         # D. Parse MAD files
         for f in self.find_log_files('multiomics_report/mad_rna'):
             self.parse_mad_json(f)
+        
+        # E. Parse Coverage files
+        coverage_files = list(self.find_log_files('multiomics_report/peak_coverage'))
+        log.debug(f"[DEBUG] Found {len(coverage_files)} coverage files")
+        for f in coverage_files:
+            self.parse_coverage_tsv(f)
+        
+        # F. Parse Peak Count files
+        peak_count_files = list(self.find_log_files('multiomics_report/peak_count'))
+        log.debug(f"[DEBUG] Found {len(peak_count_files)} peak count files")
+        for f in peak_count_files:
+            self.parse_peak_count_txt(f)
+        
+        # G. Parse Jaccard files
+        jaccard_files = list(self.find_log_files('multiomics_report/jacarrd'))
+        log.debug(f"[DEBUG] Found {len(jaccard_files)} jaccard files")
+        for f in jaccard_files:
+            self.parse_jaccard_txt(f)
+        
+        # H. Parse FRIP files
+        frip_files = list(self.find_log_files('multiomics_report/frip'))
+        log.debug(f"[DEBUG] Found {len(frip_files)} FRIP files")
+        for f in frip_files:
+            self.parse_frip_tsv(f)
         # -----------------------------------------------------------
         # 4. FILTERING & EXIT
         # -----------------------------------------------------------
@@ -54,10 +82,16 @@ class MultiqcModule(BaseMultiqcModule):
         self.genetype_data = self.ignore_samples(self.genetype_data)
         self.rsem_data = self.ignore_samples(self.rsem_data)
         self.mad_data = self.ignore_samples(self.mad_data)
+        self.coverage_data = self.ignore_samples(self.coverage_data)
+        self.peak_count_data = self.ignore_samples(self.peak_count_data)
+        self.jaccard_data = self.ignore_samples(self.jaccard_data)
+        self.frip_data = self.ignore_samples(self.frip_data)
         
         # If no data found at all, raise ModuleNoSamplesFound
         if (len(self.rnaseqc_data) == 0 and len(self.genetype_data) == 0 and 
-            len(self.rsem_data) == 0 and len(self.mad_data) == 0):
+            len(self.rsem_data) == 0 and len(self.mad_data) == 0 and
+            len(self.coverage_data) == 0 and len(self.peak_count_data) == 0 and
+            len(self.jaccard_data) == 0 and len(self.frip_data) == 0):
             raise ModuleNoSamplesFound
 
         # -----------------------------------------------------------
@@ -187,6 +221,161 @@ class MultiqcModule(BaseMultiqcModule):
         except Exception as e:
             log.warning(f"Error parsing MAD QC file {f.get('fn', 'unknown')}: {e}")
 
+    def parse_coverage_tsv(self, f):
+        """ Parses the coverage TSV file 
+        
+        Expected format:
+        Sample	Coverage_Percent	Covered_Bases	Total_Genome_Size
+        P6-1_test	.035600	1100659	3088286401
+        """
+        try:
+            lines = f['f'].splitlines()
+            if len(lines) < 2:
+                log.warning(f"Coverage file {f.get('fn', 'unknown')} has insufficient lines")
+                return
+            
+            # Parse header
+            header = lines[0].split('\t')
+            if 'Coverage_Percent' not in header:
+                log.warning(f"Coverage file {f.get('fn', 'unknown')} missing 'Coverage_Percent' column")
+                return
+            
+            # Parse data row (assuming one sample per file)
+            data_row = lines[1].split('\t')
+            if len(data_row) != len(header):
+                log.warning(f"Coverage file {f.get('fn', 'unknown')} has mismatched columns")
+                return
+            
+            # Create dict from header and data
+            parsed_data = {}
+            for i, col in enumerate(header):
+                col = col.strip()
+                try:
+                    # Try to convert to float, keep as string if it fails
+                    parsed_data[col] = float(data_row[i].strip())
+                except ValueError:
+                    parsed_data[col] = data_row[i].strip()
+            
+            # Store with sample name
+            self.coverage_data[f['s_name']] = parsed_data
+            
+        except Exception as e:
+            log.warning(f"Error parsing coverage file {f.get('fn', 'unknown')}: {e}")
+
+    def parse_peak_count_txt(self, f):
+        """ Parses the peak count text file 
+        
+        Expected format:
+        P6-2_test 3984
+        """
+        try:
+            content = f['f'].strip()
+            # Try to extract number (could be on same line as sample name or separate)
+            parts = content.split()
+            
+            # Find the numeric value
+            peak_count = None
+            for part in parts:
+                try:
+                    peak_count = int(float(part))
+                    break
+                except ValueError:
+                    continue
+            
+            if peak_count is not None:
+                self.peak_count_data[f['s_name']] = {'peak_count': peak_count}
+            else:
+                log.warning(f"Could not extract peak count from file {f.get('fn', 'unknown')}")
+                
+        except Exception as e:
+            log.warning(f"Error parsing peak count file {f.get('fn', 'unknown')}: {e}")
+
+    def parse_jaccard_txt(self, f):
+        """ Parses the jaccard text file 
+        
+        Expected format:
+        intersection	union	jaccard	n_intersections
+        1100659	1100659	1	3984
+        """
+        try:
+            lines = f['f'].splitlines()
+            if len(lines) < 2:
+                log.warning(f"Jaccard file {f.get('fn', 'unknown')} has insufficient lines")
+                return
+            
+            # Parse header
+            header = lines[0].split('\t')
+            if 'jaccard' not in header:
+                log.warning(f"Jaccard file {f.get('fn', 'unknown')} missing 'jaccard' column")
+                return
+            
+            # Parse data row
+            data_row = lines[1].split('\t')
+            if len(data_row) != len(header):
+                log.warning(f"Jaccard file {f.get('fn', 'unknown')} has mismatched columns")
+                return
+            
+            # Create dict from header and data
+            parsed_data = {}
+            for i, col in enumerate(header):
+                col = col.strip()
+                try:
+                    parsed_data[col] = float(data_row[i].strip())
+                except ValueError:
+                    parsed_data[col] = data_row[i].strip()
+            
+            # Store with sample name
+            self.jaccard_data[f['s_name']] = parsed_data
+            
+        except Exception as e:
+            log.warning(f"Error parsing jaccard file {f.get('fn', 'unknown')}: {e}")
+
+    def parse_frip_tsv(self, f):
+        """ Parses the FRIP TSV file 
+        
+        Expected format:
+        file	featureType	percent	featureReadCount	totalReadCount
+        /path/to/file.bam	frip	4.72	45984	975200
+        """
+        try:
+            lines = f['f'].splitlines()
+            if len(lines) < 2:
+                log.warning(f"FRIP file {f.get('fn', 'unknown')} has insufficient lines")
+                return
+            
+            # Parse header
+            header = lines[0].split('\t')
+            if 'percent' not in header:
+                log.warning(f"FRIP file {f.get('fn', 'unknown')} missing 'percent' column")
+                return
+            
+            # Parse data rows (could be multiple samples in one file)
+            for line_idx, line in enumerate(lines[1:], start=1):
+                if not line.strip():
+                    continue
+                    
+                data_row = line.split('\t')
+                if len(data_row) != len(header):
+                    log.warning(f"FRIP file {f.get('fn', 'unknown')} row {line_idx} has mismatched columns")
+                    continue
+                
+                # Create dict from header and data
+                parsed_data = {}
+                for i, col in enumerate(header):
+                    col = col.strip()
+                    try:
+                        parsed_data[col] = float(data_row[i].strip())
+                    except ValueError:
+                        parsed_data[col] = data_row[i].strip()
+                
+                # Check if featureType is 'frip'
+                if parsed_data.get('featureType', '').lower() == 'frip':
+                    # Use sample name from file, or extract from file path if needed
+                    s_name = f['s_name']
+                    self.frip_data[s_name] = {'percent': parsed_data['percent']}
+            
+        except Exception as e:
+            log.warning(f"Error parsing FRIP file {f.get('fn', 'unknown')}: {e}")
 
     # ===============================================================
     # REPORT WRITING
@@ -200,21 +389,21 @@ class MultiqcModule(BaseMultiqcModule):
         rnaseqc_headers['Exonic Rate'] = {
             'title': 'Exonic',
             'description': 'RNA-SeQC: Exonic Rate',
-            'max': 1, 'min': 0, 'suffix': '%',
+            'max': 1, 'min': 0,
             'scale': 'Greens',
             'format': '{:,.1%}'
         }
         rnaseqc_headers['Intergenic Rate'] = {
             'title': 'Intergenic',
             'description': 'RNA-SeQC: Intergenic Rate',
-            'max': 1, 'min': 0, 'suffix': '%',
+            'max': 1, 'min': 0,
             'scale': 'Oranges',
             'format': '{:,.1%}'
         }
         rnaseqc_headers['rRNA Rate'] = {
             'title': 'rRNA',
             'description': 'RNA-SeQC: rRNA Rate',
-            'max': 1, 'min': 0, 'suffix': '%',
+            'max': 1, 'min': 0,
             'scale': 'Reds',
             'format': '{:,.1%}'
         }
@@ -245,11 +434,59 @@ class MultiqcModule(BaseMultiqcModule):
             'format': '{:.4f}',
             'scale': 'RdYlGn'
         }
+        
+        # 3. Define Headers for Coverage Metrics
+        coverage_headers = OrderedDict()
+        coverage_headers['Coverage_Percent'] = {
+            'title': 'Coverage %',
+            'description': 'Peak Coverage: Percentage of genome covered',
+            'min': 0,
+            'max': 100,
+            'suffix': '%',
+            'format': '{:.4f}',
+            'scale': 'Blues'
+        }
+        
+        # 4. Define Headers for Peak Count
+        peak_count_headers = OrderedDict()
+        peak_count_headers['peak_count'] = {
+            'title': 'Peak Count',
+            'description': 'Number of peaks detected',
+            'format': '{:,.0f}',
+            'scale': 'Purples'
+        }
+        
+        # 5. Define Headers for Jaccard
+        jaccard_headers = OrderedDict()
+        jaccard_headers['jaccard'] = {
+            'title': 'Jaccard',
+            'description': 'Jaccard similarity coefficient',
+            'min': 0,
+            'max': 1,
+            'format': '{:.4f}',
+            'scale': 'RdYlGn'
+        }
+        
+        # 6. Define Headers for FRIP
+        frip_headers = OrderedDict()
+        frip_headers['percent'] = {
+            'title': 'FRIP %',
+            'description': 'Fraction of Reads in Peaks (FRIP) percentage',
+            'min': 0,
+            'max': 100,
+            'suffix': '%',
+            'format': '{:.2f}',
+            'scale': 'YlGn'
+        }
 
-        # 5. Add to General Stats
+        # 7. Add to General Stats
         # We call this multiple times to merge data from different dictionaries
         self.general_stats_addcols(self.rnaseqc_data, rnaseqc_headers)
         self.general_stats_addcols(self.rsem_data, rsem_headers)
+        self.general_stats_addcols(self.coverage_data, coverage_headers)
+        self.general_stats_addcols(self.peak_count_data, peak_count_headers)
+        self.general_stats_addcols(self.jaccard_data, jaccard_headers)
+        self.general_stats_addcols(self.frip_data, frip_headers)
         self.general_stats_addcols(self.mad_data, mad_headers)
 
     def write_gene_type_plot(self):
