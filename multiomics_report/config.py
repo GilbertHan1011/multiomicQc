@@ -11,13 +11,16 @@ log = logging.getLogger("multiqc")
 
 # --- CONSTANTS & CONFIGURATION ---
 
-# 1. Metrics to move/merge (The "MAD" headers)
+# 1. Metrics to move/merge (The "MAD" headers and related QC metrics)
+# These keys are propagated from parent samples to child samples in
+# `after_modules._merge_parent_data_into_children()`.
 MAD_METRIC_KEYS = [
-    'MAD of log ratios', 
-    'Pearson correlation', 
-    'Spearman correlation', 
-    'SD of log ratios', 
-    'num_pairs_evaluated'
+    # MAD QC metrics
+    'MAD of log ratios',
+    'Pearson correlation',
+    'Spearman correlation',
+    # Jaccard metrics (from *_jaccard.txt)
+    'jaccard',
 ]
 
 # 2. Regex to identify Parent Samples (Group B) vs Child Samples (Group A)

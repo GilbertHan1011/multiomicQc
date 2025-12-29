@@ -330,7 +330,9 @@ class MultiqcModule(BaseMultiqcModule):
                 except ValueError:
                     parsed_data[col] = data_row[i].strip()
             # Store with sample name
-            self.jaccard_data[f['s_name']] = parsed_data
+            s_name = f['s_name']
+            self.jaccard_data[s_name] = parsed_data
+            log.debug(f"Plugin: Parsed jaccard data for '{s_name}': {parsed_data}")
             
         except Exception as e:
             log.warning(f"Error parsing jaccard file {f.get('fn', 'unknown')}: {e}")
@@ -507,7 +509,6 @@ class MultiqcModule(BaseMultiqcModule):
             'format': '{:.4f}',
             'scale': 'RdYlGn'
         }
-        
         # 6. Define Headers for FRIP
         frip_headers = OrderedDict()
         frip_headers['percent'] = {

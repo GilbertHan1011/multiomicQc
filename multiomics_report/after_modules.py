@@ -28,7 +28,7 @@ def multiomics_report_after_modules():
         return
 
     # Phase 2: Get headers for the metrics we want to transfer
-    mad_headers = _extract_mad_headers()
+    mad_headers = _extract_reproducibility_headers()
 
     # Phase 3: The Left Join
     _merge_parent_data_into_children(parent_data, mad_headers)
@@ -62,6 +62,8 @@ def _extract_and_hide_parents() -> Dict[str, Dict]:
                     if hasattr(row, 'data') and row.data:
                         parent_data[sample_name].update(row.data)
                 
+                log.debug(f"Plugin: Extracted parent '{sample_name}' from section '{section_key}' with keys: {list(parent_data[sample_name].keys())}")
+                
                 # Remove from report
                 del samples_dict[sample_group]
                 removed_count += 1
@@ -74,46 +76,63 @@ def _extract_and_hide_parents() -> Dict[str, Dict]:
 
     if removed_count > 0:
         log.info(f"Plugin: Extracted and hid {removed_count} parent sample entries.")
+        # Debug: show all parent data keys
+        for parent_name, parent_stats in parent_data.items():
+            log.debug(f"Plugin: Parent '{parent_name}' has metrics: {list(parent_stats.keys())}")
     
     return parent_data
 
 
-def _extract_mad_headers() -> OrderedDict:
-    """Finds MAD headers in multiomics section, removes them there, returns them."""
+def _extract_reproducibility_headers() -> OrderedDict:
+    """Finds reproducibility headers in multiomics section, removes them there, returns them."""
     mad_headers = OrderedDict()
     
-    # Find the source section
-    multiomics_section_key = next(
-        (k for k in report.general_stats_headers if 'multiomic' in str(k).lower()), 
-        None
-    )
+    # Find ALL multiomics sections (not just the first one)
+    multiomics_section_keys = [
+        k for k in report.general_stats_headers 
+        if 'multiomic' in str(k).lower()
+    ]
+    
+    log.debug(f"Plugin: Found {len(multiomics_section_keys)} multiomics sections: {multiomics_section_keys}")
 
-    if multiomics_section_key:
+    # Search through all multiomics sections
+    for multiomics_section_key in multiomics_section_keys:
         headers_dict = report.general_stats_headers[multiomics_section_key]
+        log.debug(f"Plugin: Checking section '{multiomics_section_key}' with headers: {list(headers_dict.keys())}")
         
         # Copy matching headers
         for key_str in MAD_METRIC_KEYS:
-            # Check for Key object or String matches
+            # Skip if we already have this header
             col_key = ColumnKey(key_str)
+            if col_key in mad_headers:
+                continue
+                
+            # Check for Key object or String matches
             if col_key in headers_dict:
                 mad_headers[col_key] = headers_dict[col_key].copy()
                 del headers_dict[col_key] # Remove from source
+                log.debug(f"Plugin: Extracted header '{key_str}' (as ColumnKey) from '{multiomics_section_key}'")
             elif key_str in headers_dict:
                 mad_headers[ColumnKey(key_str)] = headers_dict[key_str].copy()
                 del headers_dict[key_str] # Remove from source
+                log.debug(f"Plugin: Extracted header '{key_str}' (as string) from '{multiomics_section_key}'")
 
         # Also scrub the data from the multiomics section to be clean
         if multiomics_section_key in report.general_stats_data:
-            for _, rows in report.general_stats_data[multiomics_section_key].items():
+            for sample_name, rows in report.general_stats_data[multiomics_section_key].items():
                 for row in rows:
                     if hasattr(row, 'data') and row.data:
                         for k in list(row.data.keys()):
                             if str(k) in MAD_METRIC_KEYS:
+                                log.debug(f"Plugin: Removing '{k}' from multiomics data for sample '{sample_name}'")
                                 del row.data[k]
 
-    # Fallback: Create defaults if missing
-    if not mad_headers:
-        log.warning("Plugin: MAD headers not found. Using defaults.")
+    # Fallback: Create defaults for missing headers
+    log.debug(f"Plugin: Looking for MAD_METRIC_KEYS: {MAD_METRIC_KEYS}")
+    log.debug(f"Plugin: Currently have headers: {list(mad_headers.keys())}")
+    
+    # Add missing MAD headers
+    if ColumnKey('MAD of log ratios') not in mad_headers:
         mad_headers[ColumnKey('MAD of log ratios')] = {
             'title': 'MAD',
             'description': 'MAD QC: Median Absolute Deviation of log ratios',
@@ -121,27 +140,36 @@ def _extract_mad_headers() -> OrderedDict:
             'scale': 'RdYlGn',
             'namespace': 'multiomics'
         }
+    if ColumnKey('Pearson correlation') not in mad_headers:
         mad_headers[ColumnKey('Pearson correlation')] = {
             'title': 'Pearson',
             'description': 'MAD QC: Pearson correlation coefficient',
             'min': 0, 'max': 1, 'format': '{:.4f}', 'scale': 'RdYlGn', 'namespace': 'multiomics'
         }
+    if ColumnKey('Spearman correlation') not in mad_headers:
         mad_headers[ColumnKey('Spearman correlation')] = {
             'title': 'Spearman',
             'description': 'MAD QC: Spearman correlation coefficient',
             'min': 0, 'max': 1, 'format': '{:.4f}', 'scale': 'RdYlGn', 'namespace': 'multiomics'
         }
-        mad_headers[ColumnKey('SD of log ratios')] = {
-            'title': 'SD',
-            'description': 'MAD QC: Standard Deviation of log ratios',
-            'format': '{:.4f}', 'scale': 'RdYlGn', 'namespace': 'multiomics'
+    
+    # Add jaccard header if missing (this is the key fix!)
+    if ColumnKey('jaccard') not in mad_headers:
+        log.debug("Plugin: Creating default jaccard header")
+        mad_headers[ColumnKey('jaccard')] = {
+            'title': 'Jaccard',
+            'description': 'Jaccard similarity coefficient',
+            'min': 0,
+            'max': 1,
+            'format': '{:.4f}',
+            'scale': 'RdYlGn',
+            'namespace': 'multiomics'
         }
-        mad_headers[ColumnKey('num_pairs_evaluated')] = {
-            'title': 'Pairs',
-            'description': 'MAD QC: Number of pairs evaluated',
-            'format': '{:,.0f}', 'scale': 'Blues', 'namespace': 'multiomics'
-        }
-            
+    
+    # Optional: Add other jaccard-related headers if needed
+    # (intersection, union, n_intersections) - but you removed these from MAD_METRIC_KEYS
+    
+    log.debug(f"Plugin: Final headers to merge: {list(mad_headers.keys())}")
     return mad_headers
 
 
@@ -151,6 +179,9 @@ def _merge_parent_data_into_children(parent_data: Dict, headers: OrderedDict):
     match_count = 0
     # Track where we've added headers so we only do it once per section
     sections_with_headers_added = set()
+    
+    log.debug(f"Plugin: Starting merge with {len(parent_data)} parent samples")
+    log.debug(f"Plugin: Available headers to merge: {list(headers.keys())}")
 
     for section_key, samples_dict in report.general_stats_data.items():
         
@@ -169,12 +200,16 @@ def _merge_parent_data_into_children(parent_data: Dict, headers: OrderedDict):
 
             if base_name in parent_data:
                 source_stats = parent_data[base_name]
+                log.debug(f"Plugin: Found match: child '{sample_name}' -> parent '{base_name}' in section '{section_key}'")
+                log.debug(f"Plugin: Parent '{base_name}' has keys: {list(source_stats.keys())}")
                 
                 # Check for merge collision (Child already has this data?)
                 # We check the first row for any MAD metric key
                 has_mad_data = False
+                existing_keys = set()
                 for row in rows:
                     if hasattr(row, 'data') and row.data:
+                        existing_keys.update(row.data.keys())
                         for mad_key in MAD_METRIC_KEYS:
                             if ColumnKey(mad_key) in row.data or mad_key in row.data:
                                 has_mad_data = True
@@ -183,16 +218,20 @@ def _merge_parent_data_into_children(parent_data: Dict, headers: OrderedDict):
                             break
                 
                 if has_mad_data:
+                    log.debug(f"Plugin: Child '{sample_name}' already has MAD data, skipping merge")
                     continue # Skip, already merged
 
                 # Perform Merge
+                merged_keys = []
                 for row in rows:
                     if hasattr(row, 'data') and row.data:
                         # Update child row with parent data (only new keys)
                         for k, v in source_stats.items():
                             if k not in row.data:
                                 row.data[k] = v
+                                merged_keys.append(str(k))
                 
+                log.debug(f"Plugin: Merged keys into '{sample_name}': {merged_keys}")
                 match_count += 1
                 section_modified = True
 
@@ -202,6 +241,7 @@ def _merge_parent_data_into_children(parent_data: Dict, headers: OrderedDict):
                 # Merge dictionaries
                 report.general_stats_headers[section_key].update(headers)
                 sections_with_headers_added.add(section_key)
+                log.debug(f"Plugin: Added headers to section '{section_key}'")
 
     log.info(f"Plugin: Left-joined stats into {match_count} child samples.")
 
