@@ -28,6 +28,7 @@ class MultiqcModule(BaseMultiqcModule):
         self.peak_count_data = dict() # Stores peak count data
         self.jaccard_data = dict()    # Stores jaccard data
         self.frip_data = dict()       # Stores FRIP data
+        self.preseq_data = dict()     # Stores preseq data
         # -----------------------------------------------------------
         # 3. PARSING LOGIC
         # -----------------------------------------------------------
@@ -64,7 +65,7 @@ class MultiqcModule(BaseMultiqcModule):
             self.parse_peak_count_txt(f)
         
         # G. Parse Jaccard files
-        jaccard_files = list(self.find_log_files('multiomics_report/jacarrd'))
+        jaccard_files = list(self.find_log_files('multiomics_report/jaccard'))
         log.debug(f"[DEBUG] Found {len(jaccard_files)} jaccard files")
         for f in jaccard_files:
             self.parse_jaccard_txt(f)
@@ -74,6 +75,10 @@ class MultiqcModule(BaseMultiqcModule):
         log.debug(f"[DEBUG] Found {len(frip_files)} FRIP files")
         for f in frip_files:
             self.parse_frip_tsv(f)
+        
+        # I. Parse Preseq files
+        for f in self.find_log_files('multiomics_report/preseq'):
+            self.parse_preseq_txt(f)
         # -----------------------------------------------------------
         # 4. FILTERING & EXIT
         # -----------------------------------------------------------
@@ -86,6 +91,7 @@ class MultiqcModule(BaseMultiqcModule):
         self.peak_count_data = self.ignore_samples(self.peak_count_data)
         self.jaccard_data = self.ignore_samples(self.jaccard_data)
         self.frip_data = self.ignore_samples(self.frip_data)
+        self.preseq_data = self.ignore_samples(self.preseq_data)
         
         # If no data found at all, raise ModuleNoSamplesFound
         if (len(self.rnaseqc_data) == 0 and len(self.genetype_data) == 0 and 
@@ -323,7 +329,6 @@ class MultiqcModule(BaseMultiqcModule):
                     parsed_data[col] = float(data_row[i].strip())
                 except ValueError:
                     parsed_data[col] = data_row[i].strip()
-            
             # Store with sample name
             self.jaccard_data[f['s_name']] = parsed_data
             
@@ -376,6 +381,42 @@ class MultiqcModule(BaseMultiqcModule):
             
         except Exception as e:
             log.warning(f"Error parsing FRIP file {f.get('fn', 'unknown')}: {e}")
+
+    def parse_preseq_txt(self, f):
+        """ Parses the preseq lcextrap output file 
+        
+        Extracts the 200th row value (expected distinct reads at ~200M depth).
+        This represents the library complexity at high sequencing depth.
+        
+        Expected format:
+        TOTAL_READS	EXPECTED_DISTINCT
+        1000	950
+        ...
+        (200th data row)
+        """
+        try:
+            lines = f['f'].splitlines()
+            if len(lines) < 201:  # Need header + 200 data rows
+                log.warning(f"Preseq file {f.get('fn', 'unknown')} has insufficient lines (need at least 201, got {len(lines)})")
+                return
+            
+            # Get the 200th row (line 201 including header, index 200)
+            row_200 = lines[200].strip().split('\t')
+            if len(row_200) < 2:
+                log.warning(f"Preseq file {f.get('fn', 'unknown')} row 200 has insufficient columns")
+                return
+            
+            try:
+                # Column 0: TOTAL_READS, Column 1: EXPECTED_DISTINCT
+                expected_distinct = float(row_200[1])
+                s_name = f['s_name']
+                self.preseq_data[s_name] = {'preseq_200M': expected_distinct}
+                log.debug(f"Added preseq 200th row for sample '{s_name}': {expected_distinct:,.0f}")
+            except (ValueError, IndexError) as e:
+                log.warning(f"Could not parse preseq value from {f.get('fn', 'unknown')}: {e}")
+                
+        except Exception as e:
+            log.warning(f"Error parsing preseq file {f.get('fn', 'unknown')}: {e}")
 
     # ===============================================================
     # REPORT WRITING
@@ -478,8 +519,18 @@ class MultiqcModule(BaseMultiqcModule):
             'format': '{:.2f}',
             'scale': 'YlGn'
         }
+        
+        # 7. Define Headers for Preseq
+        preseq_headers = OrderedDict()
+        preseq_headers['preseq_200M'] = {
+            'title': 'Preseq 200M',
+            'description': 'Expected distinct reads at 200M depth (library complexity)',
+            'format': '{:,.0f}',
+            'scale': 'RdYlGn',
+            'min': 0
+        }
 
-        # 7. Add to General Stats
+        # 8. Add to General Stats
         # We call this multiple times to merge data from different dictionaries
         self.general_stats_addcols(self.rnaseqc_data, rnaseqc_headers)
         self.general_stats_addcols(self.rsem_data, rsem_headers)
@@ -487,6 +538,7 @@ class MultiqcModule(BaseMultiqcModule):
         self.general_stats_addcols(self.peak_count_data, peak_count_headers)
         self.general_stats_addcols(self.jaccard_data, jaccard_headers)
         self.general_stats_addcols(self.frip_data, frip_headers)
+        self.general_stats_addcols(self.preseq_data, preseq_headers)
         self.general_stats_addcols(self.mad_data, mad_headers)
 
     def write_gene_type_plot(self):
