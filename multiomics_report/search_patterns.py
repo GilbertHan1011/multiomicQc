@@ -2,8 +2,11 @@
 Search pattern registration for MultiQC plugin.
 Handles execution_start hook.
 """
+import logging
 from multiqc import config
 from multiqc.utils.util_functions import update_dict
+
+log = logging.getLogger("multiqc")
 
 
 def execution_start():
@@ -33,6 +36,31 @@ def execution_start():
         'multiomics_report/fraglen': {'fn': "*_fraglen.txt"},
         'multiomics_report/frip': {'fn': "frip*.tsv"},
         'multiomics_report/preseq' : {'fn': "lcextrap*.txt"},
+        'multiomics_report/bam_correlation': {'fn': "*_bam_correlation_stats_mqc.tsv"},
     }
+    
+    # Modify custom_content search pattern to exclude correlation files
+    if 'custom_content' in config.sp:
+        custom_content_pattern = config.sp['custom_content']
+        
+        # Ensure it's a dict (not a list)
+        if isinstance(custom_content_pattern, dict):
+            # Add exclude pattern
+            if 'exclude_fn' not in custom_content_pattern:
+                custom_content_pattern['exclude_fn'] = []
+            elif not isinstance(custom_content_pattern['exclude_fn'], list):
+                custom_content_pattern['exclude_fn'] = [custom_content_pattern['exclude_fn']]
+            
+            # Add our exclude patterns
+            exclude_patterns = [
+                "*bam_correlation*.yaml",
+                "*bam_correlation*.yml",
+            ]
+            for excl in exclude_patterns:
+                if excl not in custom_content_pattern['exclude_fn']:
+                    custom_content_pattern['exclude_fn'].append(excl)
+            
+            log.info(f"Plugin: Added exclude patterns to custom_content: {exclude_patterns}")
+    
     config.sp = update_dict(config.sp, search_patterns, add_in_the_beginning=True)
 

@@ -29,6 +29,7 @@ class MultiqcModule(BaseMultiqcModule):
         self.jaccard_data = dict()    # Stores jaccard data
         self.frip_data = dict()       # Stores FRIP data
         self.preseq_data = dict()     # Stores preseq data
+        self.bam_correlation_data = dict()  # Stores bam_correlation data
         # -----------------------------------------------------------
         # 3. PARSING LOGIC
         # -----------------------------------------------------------
@@ -79,6 +80,12 @@ class MultiqcModule(BaseMultiqcModule):
         # I. Parse Preseq files
         for f in self.find_log_files('multiomics_report/preseq'):
             self.parse_preseq_txt(f)
+        
+        # J. Parse BAM Correlation files
+        bam_correlation_files = list(self.find_log_files('multiomics_report/bam_correlation'))
+        log.debug(f"[DEBUG] Found {len(bam_correlation_files)} bam_correlation files")
+        for f in bam_correlation_files:
+            self.parse_bam_correlation_tsv(f)
         # -----------------------------------------------------------
         # 4. FILTERING & EXIT
         # -----------------------------------------------------------
@@ -92,12 +99,14 @@ class MultiqcModule(BaseMultiqcModule):
         self.jaccard_data = self.ignore_samples(self.jaccard_data)
         self.frip_data = self.ignore_samples(self.frip_data)
         self.preseq_data = self.ignore_samples(self.preseq_data)
+        self.bam_correlation_data = self.ignore_samples(self.bam_correlation_data)
         
         # If no data found at all, raise ModuleNoSamplesFound
         if (len(self.rnaseqc_data) == 0 and len(self.genetype_data) == 0 and 
             len(self.rsem_data) == 0 and len(self.mad_data) == 0 and
             len(self.coverage_data) == 0 and len(self.peak_count_data) == 0 and
-            len(self.jaccard_data) == 0 and len(self.frip_data) == 0):
+            len(self.jaccard_data) == 0 and len(self.frip_data) == 0 and
+            len(self.preseq_data) == 0 and len(self.bam_correlation_data) == 0):
             raise ModuleNoSamplesFound
 
         # -----------------------------------------------------------
@@ -300,8 +309,9 @@ class MultiqcModule(BaseMultiqcModule):
         """ Parses the jaccard text file 
         
         Expected format:
-        intersection	union	jaccard	n_intersections
-        1100659	1100659	1	3984
+        Sample1	Sample2	Jaccard_Similarity	Intersection	Union_Intersection
+        P6-1_test	P6-2_test	1	1100659	1100659
+        (may have multiple rows - will calculate mean of numeric columns)
         """
         try:
             lines = f['f'].splitlines()
@@ -310,29 +320,62 @@ class MultiqcModule(BaseMultiqcModule):
                 return
             
             # Parse header
-            header = lines[0].split('\t')
-            if 'jaccard' not in header:
-                log.warning(f"Jaccard file {f.get('fn', 'unknown')} missing 'jaccard' column")
+            header = [col.strip() for col in lines[0].split('\t')]
+            if 'Jaccard_Similarity' not in header:
+                log.warning(f"Jaccard file {f.get('fn', 'unknown')} missing 'Jaccard_Similarity' column")
                 return
             
-            # Parse data row
-            data_row = lines[1].split('\t')
-            if len(data_row) != len(header):
-                log.warning(f"Jaccard file {f.get('fn', 'unknown')} has mismatched columns")
+            # Identify numeric columns (exclude Sample1, Sample2)
+            numeric_columns = ['Jaccard_Similarity', 'Intersection', 'Union_Intersection']
+            numeric_col_indices = [i for i, col in enumerate(header) if col in numeric_columns]
+            
+            # Collect all data rows
+            all_rows = []
+            for line_idx, line in enumerate(lines[1:], start=1):
+                if not line.strip():
+                    continue
+                data_row = [val.strip() for val in line.split('\t')]
+                if len(data_row) != len(header):
+                    log.warning(f"Jaccard file {f.get('fn', 'unknown')} row {line_idx} has mismatched columns (expected {len(header)}, got {len(data_row)})")
+                    continue
+                all_rows.append(data_row)
+            
+            if not all_rows:
+                log.warning(f"Jaccard file {f.get('fn', 'unknown')} has no valid data rows")
                 return
             
-            # Create dict from header and data
+            # Calculate mean for numeric columns
             parsed_data = {}
-            for i, col in enumerate(header):
-                col = col.strip()
-                try:
-                    parsed_data[col] = float(data_row[i].strip())
-                except ValueError:
-                    parsed_data[col] = data_row[i].strip()
+            
+            # For numeric columns, calculate mean
+            for col_idx in numeric_col_indices:
+                col_name = header[col_idx]
+                numeric_values = []
+                for row in all_rows:
+                    try:
+                        numeric_values.append(float(row[col_idx]))
+                    except (ValueError, IndexError):
+                        log.warning(f"Jaccard file {f.get('fn', 'unknown')}: Could not parse numeric value for column '{col_name}' in row")
+                        continue
+                
+                if numeric_values:
+                    parsed_data[col_name] = sum(numeric_values) / len(numeric_values)
+                else:
+                    log.warning(f"Jaccard file {f.get('fn', 'unknown')}: No valid numeric values for column '{col_name}'")
+            
+            # For non-numeric columns (Sample1, Sample2), use first row value
+            for col_idx, col_name in enumerate(header):
+                if col_name not in numeric_columns:
+                    if all_rows:
+                        parsed_data[col_name] = all_rows[0][col_idx]
+            
             # Store with sample name
             s_name = f['s_name']
             self.jaccard_data[s_name] = parsed_data
-            log.debug(f"Plugin: Parsed jaccard data for '{s_name}': {parsed_data}")
+            if len(all_rows) > 1:
+                log.debug(f"Plugin: Parsed jaccard data for '{s_name}' from {len(all_rows)} rows (mean calculated): {parsed_data}")
+            else:
+                log.debug(f"Plugin: Parsed jaccard data for '{s_name}': {parsed_data}")
             
         except Exception as e:
             log.warning(f"Error parsing jaccard file {f.get('fn', 'unknown')}: {e}")
@@ -420,6 +463,56 @@ class MultiqcModule(BaseMultiqcModule):
         except Exception as e:
             log.warning(f"Error parsing preseq file {f.get('fn', 'unknown')}: {e}")
 
+    def parse_bam_correlation_tsv(self, f):
+        """ Parses the BAM correlation TSV file 
+        
+        Expected format:
+        Sample	BAM_Correlation	Correlation_Quality	N_Replicates
+        P6	1.0000	excellent	2
+        """
+        try:
+            lines = f['f'].splitlines()
+            if len(lines) < 2:
+                log.warning(f"BAM correlation file {f.get('fn', 'unknown')} has insufficient lines")
+                return
+            
+            # Parse header
+            header = [col.strip() for col in lines[0].split('\t')]
+            if 'BAM_Correlation' not in header:
+                log.warning(f"BAM correlation file {f.get('fn', 'unknown')} missing 'BAM_Correlation' column")
+                return
+            
+            # Parse data rows (could be multiple samples in one file)
+            for line_idx, line in enumerate(lines[1:], start=1):
+                if not line.strip():
+                    continue
+                    
+                data_row = [val.strip() for val in line.split('\t')]
+                if len(data_row) != len(header):
+                    log.warning(f"BAM correlation file {f.get('fn', 'unknown')} row {line_idx} has mismatched columns (expected {len(header)}, got {len(data_row)})")
+                    continue
+                
+                # Create dict from header and data
+                parsed_data = {}
+                for i, col in enumerate(header):
+                    col = col.strip()
+                    try:
+                        # Try to convert to float for numeric columns
+                        parsed_data[col] = float(data_row[i].strip())
+                    except ValueError:
+                        # Keep as string for non-numeric columns (e.g., Correlation_Quality)
+                        parsed_data[col] = data_row[i].strip()
+                
+                # Extract sample name from the data (use Sample column if available, otherwise use file's s_name)
+                s_name = parsed_data.get('Sample', f['s_name'])
+                
+                # Store only BAM_Correlation for general stats
+                self.bam_correlation_data[s_name] = {'BAM_Correlation': parsed_data.get('BAM_Correlation')}
+                log.debug(f"Parsed BAM correlation data for '{s_name}': BAM_Correlation={parsed_data.get('BAM_Correlation')}")
+            
+        except Exception as e:
+            log.warning(f"Error parsing BAM correlation file {f.get('fn', 'unknown')}: {e}")
+
     # ===============================================================
     # REPORT WRITING
     # ===============================================================
@@ -501,7 +594,7 @@ class MultiqcModule(BaseMultiqcModule):
         
         # 5. Define Headers for Jaccard
         jaccard_headers = OrderedDict()
-        jaccard_headers['jaccard'] = {
+        jaccard_headers['Jaccard_Similarity'] = {
             'title': 'Jaccard',
             'description': 'Jaccard similarity coefficient',
             'min': 0,
@@ -530,8 +623,19 @@ class MultiqcModule(BaseMultiqcModule):
             'scale': 'RdYlGn',
             'min': 0
         }
+        
+        # 8. Define Headers for BAM Correlation
+        bam_correlation_headers = OrderedDict()
+        bam_correlation_headers['BAM_Correlation'] = {
+            'title': 'BAM Correlation',
+            'description': 'BAM file correlation coefficient between replicates',
+            'min': 0,
+            'max': 1,
+            'format': '{:.4f}',
+            'scale': 'RdYlGn'
+        }
 
-        # 8. Add to General Stats
+        # 9. Add to General Stats
         # We call this multiple times to merge data from different dictionaries
         self.general_stats_addcols(self.rnaseqc_data, rnaseqc_headers)
         self.general_stats_addcols(self.rsem_data, rsem_headers)
@@ -540,6 +644,7 @@ class MultiqcModule(BaseMultiqcModule):
         self.general_stats_addcols(self.jaccard_data, jaccard_headers)
         self.general_stats_addcols(self.frip_data, frip_headers)
         self.general_stats_addcols(self.preseq_data, preseq_headers)
+        self.general_stats_addcols(self.bam_correlation_data, bam_correlation_headers)
         self.general_stats_addcols(self.mad_data, mad_headers)
 
     def write_gene_type_plot(self):

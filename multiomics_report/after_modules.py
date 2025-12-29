@@ -153,10 +153,10 @@ def _extract_reproducibility_headers() -> OrderedDict:
             'min': 0, 'max': 1, 'format': '{:.4f}', 'scale': 'RdYlGn', 'namespace': 'multiomics'
         }
     
-    # Add jaccard header if missing (this is the key fix!)
-    if ColumnKey('jaccard') not in mad_headers:
+    # Add jaccard header if missing
+    if ColumnKey('Jaccard_Similarity') not in mad_headers:
         log.debug("Plugin: Creating default jaccard header")
-        mad_headers[ColumnKey('jaccard')] = {
+        mad_headers[ColumnKey('Jaccard_Similarity')] = {
             'title': 'Jaccard',
             'description': 'Jaccard similarity coefficient',
             'min': 0,
@@ -166,8 +166,18 @@ def _extract_reproducibility_headers() -> OrderedDict:
             'namespace': 'multiomics'
         }
     
-    # Optional: Add other jaccard-related headers if needed
-    # (intersection, union, n_intersections) - but you removed these from MAD_METRIC_KEYS
+    # Add BAM_Correlation header if missing
+    if ColumnKey('BAM_Correlation') not in mad_headers:
+        log.debug("Plugin: Creating default BAM_Correlation header")
+        mad_headers[ColumnKey('BAM_Correlation')] = {
+            'title': 'BAM Correlation',
+            'description': 'BAM file correlation coefficient between replicates',
+            'min': 0,
+            'max': 1,
+            'format': '{:.4f}',
+            'scale': 'RdYlGn',
+            'namespace': 'multiomics'
+        }
     
     log.debug(f"Plugin: Final headers to merge: {list(mad_headers.keys())}")
     return mad_headers

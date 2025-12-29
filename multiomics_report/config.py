@@ -21,6 +21,8 @@ MAD_METRIC_KEYS = [
     'Spearman correlation',
     # Jaccard metrics (from *_jaccard.txt)
     'jaccard',
+    # BAM Correlation metrics (from *_bam_correlation_stats_mqc.tsv)
+    'BAM_Correlation',
 ]
 
 # 2. Regex to identify Parent Samples (Group B) vs Child Samples (Group A)
@@ -53,7 +55,8 @@ def before_config():
         '_Log.final.out', '.summary_metrics.json', '.metrics.tsv', 
         '.metrics', '.isoforms', 
         '.genes', '_fastp',"_gene_type_count",
-        "_coverage.tsv", "_peakcount.txt", "_jaccard.txt",
+        "_coverage.tsv", "_peakcount.txt",
+        "_jaccard.txt", "_bam_correlation_stats_mqc.tsv",
         {'type': 'remove', 'pattern': 'sambamba_markdup_'},  # Remove prefix
         {'type': 'remove', 'pattern': 'bowtie2_'},            # Remove prefix
         {'type': 'remove', 'pattern': '.err'},                 # Remove suffix
@@ -63,7 +66,6 @@ def before_config():
     # Prepend to ensure higher priority
     config.fn_clean_exts[0:0] = extra_exts
     log.debug(f"Plugin: Added {len(extra_exts)} patterns to fn_clean_exts")
-
     # 2. Module Defaults
     for mod, defaults in MODULE_DEFAULTS.items():
         if not hasattr(config, mod):
