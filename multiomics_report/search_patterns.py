@@ -37,6 +37,10 @@ def execution_start():
         'multiomics_report/frip': {'fn': "frip*.tsv"},
         'multiomics_report/preseq' : {'fn': "lcextrap*.txt"},
         'multiomics_report/bam_correlation': {'fn': "*_bam_correlation_stats_mqc.tsv"},
+        'multiomics_report/frip_atac': {'fn': "*stats.tsv", 'contents': 'frip'},
+        'multiomics_report/tss': {'fn': "*tss_histogram.csv"},
+        'multiomics_report/prealign': {'fn': "*prealign.stats.tsv", 'contents': 'percent_filtered'},
+        'multiomics_report/samblaster': {'fn': "*.samblaster.log", 'contents': 'Marked'},        
     }
     
     # Modify custom_content search pattern to exclude correlation files

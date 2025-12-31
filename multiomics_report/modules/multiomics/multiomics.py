@@ -30,6 +30,10 @@ class MultiqcModule(BaseMultiqcModule):
         self.frip_data = dict()       # Stores FRIP data
         self.preseq_data = dict()     # Stores preseq data
         self.bam_correlation_data = dict()  # Stores bam_correlation data
+        self.peaks_stats_data = dict()  # Stores peaks stats data (peaks, frip, regulatory_fraction)
+        self.prealign_data = dict()  # Stores prealign stats data (percent_filtered)
+        self.atacseq_data = dict()  # Stores ATAC-seq/Samblaster data (n_tot, n_nondups, nrf)
+        self.atacseq_tss_data = dict()  # Stores TSS coverage data (downsampled for plotting)
         # -----------------------------------------------------------
         # 3. PARSING LOGIC
         # -----------------------------------------------------------
@@ -86,6 +90,36 @@ class MultiqcModule(BaseMultiqcModule):
         log.debug(f"[DEBUG] Found {len(bam_correlation_files)} bam_correlation files")
         for f in bam_correlation_files:
             self.parse_bam_correlation_tsv(f)
+        
+        # K. Parse Peaks Stats files (*stats.tsv)
+        peaks_stats_files = list(self.find_log_files('multiomics_report/frip_atac'))
+        log.debug(f"[DEBUG] Found {len(peaks_stats_files)} peaks stats files")
+        for f in peaks_stats_files:
+            self.parse_peaks_stats_tsv(f)
+        
+        # L. Parse Prealign Stats files (*prealign.stats.tsv)
+        prealign_files = list(self.find_log_files('multiomics_report/prealign'))
+        log.debug(f"[DEBUG] Found {len(prealign_files)} prealign stats files")
+        for f in prealign_files:
+            self.parse_prealign_stats_tsv(f)
+        
+        # M. Parse Samblaster files
+        samblaster_files = list(self.find_log_files('multiomics_report/samblaster'))
+        log.debug(f"[DEBUG] Found {len(samblaster_files)} samblaster files")
+        for f in samblaster_files:
+            self.parse_samblaster_log(f)
+        
+        # N. Parse TSS files
+        tss_files = list(self.find_log_files('multiomics_report/tss'))
+        log.debug(f"[DEBUG] Found {len(tss_files)} TSS files")
+        for f in tss_files:
+            my_sample_name = f['s_name'].replace('_TSS', '')
+            tss_data, tss_max = self.parse_atacseq_tss(f['f'])
+            self.atacseq_tss_data[f['s_name']] = tss_data
+            # Store tss_max in atacseq_data with the cleaned sample name
+            if my_sample_name not in self.atacseq_data:
+                self.atacseq_data[my_sample_name] = {}
+            self.atacseq_data[my_sample_name]['tss_max'] = tss_max
         # -----------------------------------------------------------
         # 4. FILTERING & EXIT
         # -----------------------------------------------------------
@@ -100,13 +134,19 @@ class MultiqcModule(BaseMultiqcModule):
         self.frip_data = self.ignore_samples(self.frip_data)
         self.preseq_data = self.ignore_samples(self.preseq_data)
         self.bam_correlation_data = self.ignore_samples(self.bam_correlation_data)
+        self.peaks_stats_data = self.ignore_samples(self.peaks_stats_data)
+        self.prealign_data = self.ignore_samples(self.prealign_data)
+        self.atacseq_data = self.ignore_samples(self.atacseq_data)
+        self.atacseq_tss_data = self.ignore_samples(self.atacseq_tss_data)
         
         # If no data found at all, raise ModuleNoSamplesFound
         if (len(self.rnaseqc_data) == 0 and len(self.genetype_data) == 0 and 
             len(self.rsem_data) == 0 and len(self.mad_data) == 0 and
             len(self.coverage_data) == 0 and len(self.peak_count_data) == 0 and
             len(self.jaccard_data) == 0 and len(self.frip_data) == 0 and
-            len(self.preseq_data) == 0 and len(self.bam_correlation_data) == 0):
+            len(self.preseq_data) == 0 and len(self.bam_correlation_data) == 0 and
+            len(self.peaks_stats_data) == 0 and len(self.prealign_data) == 0 and
+            len(self.atacseq_data) == 0 and len(self.atacseq_tss_data) == 0):
             raise ModuleNoSamplesFound
 
         # -----------------------------------------------------------
@@ -513,6 +553,204 @@ class MultiqcModule(BaseMultiqcModule):
         except Exception as e:
             log.warning(f"Error parsing BAM correlation file {f.get('fn', 'unknown')}: {e}")
 
+    def parse_peaks_stats_tsv(self, f):
+        """ Parses the peaks stats TSV file 
+        
+        Expected format:
+        peaks   1715
+        frip    1
+        regulatory_fraction     0.469257
+        """
+        try:
+            parsed_data = {}
+            for line in f['f'].splitlines():
+                if not line.strip():
+                    continue
+                s = line.split('\t')
+                if len(s) >= 2:
+                    key = s[0].strip()
+                    val = s[1].strip()
+                    # Try to convert numbers to floats
+                    try:
+                        parsed_data[key] = float(val)
+                    except ValueError:
+                        parsed_data[key] = val  # Keep strings if not numeric
+            
+            # Only store if we have the expected keys
+            if parsed_data and ('peaks' in parsed_data or 'frip' in parsed_data or 'regulatory_fraction' in parsed_data):
+                # Rename keys to match expected format
+                formatted_data = {}
+                if 'peaks' in parsed_data:
+                    formatted_data['peaks'] = int(parsed_data['peaks'])
+                if 'frip' in parsed_data:
+                    formatted_data['frip'] = parsed_data['frip']
+                if 'regulatory_fraction' in parsed_data:
+                    formatted_data['regulatory_fraction'] = parsed_data['regulatory_fraction']
+                
+                self.peaks_stats_data[f['s_name']] = formatted_data
+                log.debug(f"Parsed peaks stats for '{f['s_name']}': {formatted_data}")
+            else:
+                log.warning(f"Peaks stats file {f.get('fn', 'unknown')} missing expected keys (peaks, frip, regulatory_fraction)")
+                
+        except Exception as e:
+            log.warning(f"Error parsing peaks stats file {f.get('fn', 'unknown')}: {e}")
+
+    def parse_prealign_stats_tsv(self, f):
+        """ Parses the prealign stats TSV file 
+        
+        Expected format:
+        prealignment    reads_before    reads_after     reads_filtered  percent_filtered
+        chrM    2486    2160    326     0.131134
+        total   2486    2160    326     0.131134
+        """
+        try:
+            lines = f['f'].splitlines()
+            if len(lines) < 2:
+                log.warning(f"Prealign stats file {f.get('fn', 'unknown')} has insufficient lines")
+                return
+            
+            # Parse header
+            header = [col.strip() for col in lines[0].split('\t')]
+            if 'percent_filtered' not in header:
+                log.warning(f"Prealign stats file {f.get('fn', 'unknown')} missing 'percent_filtered' column")
+                return
+            
+            percent_filtered_idx = header.index('percent_filtered')
+            prealignment_idx = header.index('prealignment')
+            
+            # Find the row with "total" in the prealignment column
+            percent_filtered = None
+            for line_idx, line in enumerate(lines[1:], start=1):
+                if not line.strip():
+                    continue
+                data_row = [val.strip() for val in line.split('\t')]
+                if len(data_row) <= max(percent_filtered_idx, prealignment_idx):
+                    continue
+                
+                # Check if this is the "total" row
+                if data_row[prealignment_idx].lower() == 'total':
+                    try:
+                        percent_filtered = float(data_row[percent_filtered_idx])
+                        # Convert decimal to percentage if value is < 1 (e.g., 0.131134 -> 13.11)
+                        if percent_filtered < 1:
+                            percent_filtered = percent_filtered * 100
+                        break
+                    except (ValueError, IndexError) as e:
+                        log.warning(f"Prealign stats file {f.get('fn', 'unknown')}: Could not parse percent_filtered from total row: {e}")
+                        continue
+            
+            if percent_filtered is not None:
+                self.prealign_data[f['s_name']] = {'percent_filtered': percent_filtered}
+                log.debug(f"Parsed prealign stats for '{f['s_name']}': percent_filtered={percent_filtered}")
+            else:
+                log.warning(f"Prealign stats file {f.get('fn', 'unknown')}: Could not find 'total' row or extract percent_filtered")
+                
+        except Exception as e:
+            log.warning(f"Error parsing prealign stats file {f.get('fn', 'unknown')}: {e}")
+
+    def parse_samblaster_log(self, f):
+        """ Parses the Samblaster log file 
+        
+        Expected format:
+        samblaster: Marked 3265 of 6480 (50.39%) read ids as duplicates using 2860k memory in 0.010S CPU seconds and 19S wall time.
+        
+        Extracts:
+        - n_tot: total number of read ids
+        - n_dups: number of duplicates
+        - n_nondups: n_tot - n_dups
+        - nrf: Non-Redundant Fraction = n_nondups / n_tot
+        """
+        import re
+        try:
+            sample_name = f['s_name']
+            
+            # Parse the log file
+            for line in f['f'].splitlines():
+                if 'Marked' in line and 'read ids as duplicates' in line:
+                    # Example: "samblaster: Marked 3265 of 6480 (50.39%) read ids as duplicates..."
+                    match = re.search(r'Marked\s+(\d+)\s+of\s+(\d+)', line)
+                    if match:
+                        n_dups = int(match.group(1))
+                        n_tot = int(match.group(2))
+                        n_nondups = n_tot - n_dups
+                        
+                        if sample_name not in self.atacseq_data:
+                            self.atacseq_data[sample_name] = {}
+                        
+                        self.atacseq_data[sample_name]['n_tot'] = n_tot
+                        self.atacseq_data[sample_name]['n_nondups'] = n_nondups
+                        self.atacseq_data[sample_name]['n_dups'] = n_dups
+                        
+                        # Calculate NRF (Non-Redundant Fraction) = 1 - duplication_rate = n_nondups / n_tot
+                        if n_tot > 0:
+                            nrf = float(n_nondups) / float(n_tot)
+                            self.atacseq_data[sample_name]['nrf'] = nrf
+                        else:
+                            self.atacseq_data[sample_name]['nrf'] = 0.0
+                        
+                        log.debug(f"Parsed samblaster data for '{sample_name}': n_tot={n_tot}, n_nondups={n_nondups}, nrf={nrf:.4f}")
+                        break
+            else:
+                log.warning(f"Samblaster log file {f.get('fn', 'unknown')}: Could not find 'Marked ... read ids as duplicates' line")
+                
+        except Exception as e:
+            log.warning(f"Error parsing samblaster log file {f.get('fn', 'unknown')}: {e}")
+
+    def parse_atacseq_tss(self, file_content):
+        """ Parses the TSS CSV file 
+        
+        Expected format:
+        base,count
+        -2001,0
+        -2000,0
+        ...
+        
+        Returns:
+            tuple: (data, max_value)
+                - data: OrderedDict mapping distance (int) to coverage (float), downsampled (every 10th point)
+                - max_value: maximum coverage value
+        """
+        data = OrderedDict()
+        count = 0
+        max_value = 0.0
+        
+        try:
+            for line in file_content.splitlines():
+                if not line.strip():
+                    continue
+                    
+                s = line.split(',')
+                if len(s) < 2:
+                    continue
+                
+                # Skip header line
+                if s[0].strip() == 'base':
+                    continue
+                
+                try:
+                    distance = int(s[0].strip())
+                    coverage = float(s[1].strip())
+                    
+                    # Track maximum coverage value
+                    if coverage > max_value:
+                        max_value = coverage
+                    
+                    count += 1
+                    # Store every 10th data point for plotting (downsampling)
+                    if count % 10 == 0:
+                        data[distance] = coverage
+                        
+                except (ValueError, IndexError) as e:
+                    log.warning(f"Could not parse TSS line: {line.strip()}, error: {e}")
+                    continue
+            
+            log.debug(f"Parsed TSS data: {len(data)} points stored (downsampled), max_value={max_value}")
+            return data, max_value
+            
+        except Exception as e:
+            log.warning(f"Error parsing TSS file: {e}")
+            return OrderedDict(), 0.0
+
     # ===============================================================
     # REPORT WRITING
     # ===============================================================
@@ -634,8 +872,75 @@ class MultiqcModule(BaseMultiqcModule):
             'format': '{:.4f}',
             'scale': 'RdYlGn'
         }
+        
+        # 9. Define Headers for Peaks Stats
+        peaks_stats_headers = OrderedDict()
+        peaks_stats_headers['peaks'] = {
+            'title': 'Peaks',
+            'description': 'Number of peaks detected',
+            'format': '{:,.0f}',
+            'scale': 'Purples'
+        }
+        peaks_stats_headers['frip'] = {
+            'title': 'FRIP',
+            'description': 'Fraction of Reads in Peaks',
+            'min': 0,
+            'max': 1,
+            'format': '{:.4f}',
+            'scale': 'YlGn'
+        }
+        peaks_stats_headers['regulatory_fraction'] = {
+            'title': 'Regulatory Fraction',
+            'description': 'Fraction of peaks in regulatory regions',
+            'min': 0,
+            'max': 1,
+            'format': '{:.2%}',
+            'scale': 'Blues'
+        }
+        
+        # 10. Define Headers for Prealign Stats
+        prealign_headers = OrderedDict()
+        prealign_headers['percent_filtered'] = {
+            'title': 'Prealign Filtered %',
+            'description': 'Percentage of reads filtered during prealignment',
+            'min': 0,
+            'max': 100,
+            'suffix': '%',
+            'format': '{:.2f}',
+            'scale': 'Oranges'
+        }
+        
+        # 11. Define Headers for Samblaster/ATAC-seq Stats
+        samblaster_headers = OrderedDict()
+        samblaster_headers['n_tot'] = {
+            'title': 'Total\nAlignments',
+            'description': 'Total number of alignments processed by Samblaster',
+            'format': '{:,.0f}',
+            'scale': 'Blues'
+        }
+        samblaster_headers['n_nondups'] = {
+            'title': 'Non-Duplicate\nAlignments',
+            'description': 'Number of non-duplicate alignments from Samblaster',
+            'format': '{:,.0f}',
+            'scale': 'Greens'
+        }
+        samblaster_headers['nrf'] = {
+            'title': 'NRF',
+            'description': 'Non-Redundant Fraction (1 - duplication rate)',
+            'min': 0.0,
+            'max': 1.0,
+            'format': '{:.4f}',
+            'scale': 'Greens'
+        }
+        samblaster_headers['tss_max'] = {
+            'title': 'TSS Max',
+            'description': 'Maximum TSS enrichment value',
+            'format': '{:.2f}',
+            'scale': 'RdYlGn',
+            'min': 0
+        }
 
-        # 9. Add to General Stats
+        # 12. Add to General Stats
         # We call this multiple times to merge data from different dictionaries
         self.general_stats_addcols(self.rnaseqc_data, rnaseqc_headers)
         self.general_stats_addcols(self.rsem_data, rsem_headers)
@@ -645,6 +950,43 @@ class MultiqcModule(BaseMultiqcModule):
         self.general_stats_addcols(self.frip_data, frip_headers)
         self.general_stats_addcols(self.preseq_data, preseq_headers)
         self.general_stats_addcols(self.bam_correlation_data, bam_correlation_headers)
+        self.general_stats_addcols(self.peaks_stats_data, peaks_stats_headers)
+        self.general_stats_addcols(self.prealign_data, prealign_headers)
+        
+        # Prepare samblaster data with proper type conversion
+        samblaster_data = {}
+        for sample_name in self.atacseq_data:
+            samblaster_data[sample_name] = {}
+            
+            if 'n_tot' in self.atacseq_data[sample_name]:
+                try:
+                    value = int(self.atacseq_data[sample_name]['n_tot'])
+                except (ValueError, TypeError):
+                    value = None
+                samblaster_data[sample_name]['n_tot'] = value
+            
+            if 'n_nondups' in self.atacseq_data[sample_name]:
+                try:
+                    value = int(self.atacseq_data[sample_name]['n_nondups'])
+                except (ValueError, TypeError):
+                    value = None
+                samblaster_data[sample_name]['n_nondups'] = value
+            
+            if 'nrf' in self.atacseq_data[sample_name]:
+                try:
+                    value = float(self.atacseq_data[sample_name]['nrf'])
+                except (ValueError, TypeError):
+                    value = None
+                samblaster_data[sample_name]['nrf'] = value
+            
+            if 'tss_max' in self.atacseq_data[sample_name]:
+                try:
+                    value = float(self.atacseq_data[sample_name]['tss_max'])
+                except (ValueError, TypeError):
+                    value = None
+                samblaster_data[sample_name]['tss_max'] = value
+        
+        self.general_stats_addcols(samblaster_data, samblaster_headers)
         self.general_stats_addcols(self.mad_data, mad_headers)
 
     def write_gene_type_plot(self):

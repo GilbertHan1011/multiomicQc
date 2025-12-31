@@ -57,6 +57,7 @@ def before_config():
         '.genes', '_fastp',"_gene_type_count",
         "_coverage.tsv", "_peakcount.txt",
         "_jaccard.txt", "_bam_correlation_stats_mqc.tsv",
+        ".prealign.stats.tsv",".stats.tsv",".tss_histogram.csv",
         {'type': 'remove', 'pattern': 'sambamba_markdup_'},  # Remove prefix
         {'type': 'remove', 'pattern': 'bowtie2_'},            # Remove prefix
         {'type': 'remove', 'pattern': '.err'},                 # Remove suffix
