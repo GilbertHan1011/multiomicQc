@@ -34,6 +34,8 @@ class MultiqcModule(BaseMultiqcModule):
         self.prealign_data = dict()  # Stores prealign stats data (percent_filtered)
         self.atacseq_data = dict()  # Stores ATAC-seq/Samblaster data (n_tot, n_nondups, nrf)
         self.atacseq_tss_data = dict()  # Stores TSS coverage data (downsampled for plotting)
+        self.replicate_correlations_data = dict()  # Stores replicate correlation data (pearson_p)
+        self.reproducibility_qc_data = dict()  # Stores reproducibility QC data (rescue_ratio, self_consistency_ratio, N_optimal)
         # -----------------------------------------------------------
         # 3. PARSING LOGIC
         # -----------------------------------------------------------
@@ -120,6 +122,18 @@ class MultiqcModule(BaseMultiqcModule):
             if my_sample_name not in self.atacseq_data:
                 self.atacseq_data[my_sample_name] = {}
             self.atacseq_data[my_sample_name]['tss_max'] = tss_max
+        
+        # O. Parse Replicate Correlations files
+        replicate_corr_files = list(self.find_log_files('multiomics_report/replicate_correlations'))
+        log.debug(f"[DEBUG] Found {len(replicate_corr_files)} replicate correlation files")
+        for f in replicate_corr_files:
+            self.parse_replicate_correlations_tsv(f)
+        
+        # P. Parse Reproducibility QC files
+        reproducibility_qc_files = list(self.find_log_files('multiomics_report/reproducibility_qc'))
+        log.debug(f"[DEBUG] Found {len(reproducibility_qc_files)} reproducibility QC files")
+        for f in reproducibility_qc_files:
+            self.parse_reproducibility_qc_json(f)
         # -----------------------------------------------------------
         # 4. FILTERING & EXIT
         # -----------------------------------------------------------
@@ -138,6 +152,8 @@ class MultiqcModule(BaseMultiqcModule):
         self.prealign_data = self.ignore_samples(self.prealign_data)
         self.atacseq_data = self.ignore_samples(self.atacseq_data)
         self.atacseq_tss_data = self.ignore_samples(self.atacseq_tss_data)
+        self.replicate_correlations_data = self.ignore_samples(self.replicate_correlations_data)
+        self.reproducibility_qc_data = self.ignore_samples(self.reproducibility_qc_data)
         
         # If no data found at all, raise ModuleNoSamplesFound
         if (len(self.rnaseqc_data) == 0 and len(self.genetype_data) == 0 and 
@@ -146,7 +162,8 @@ class MultiqcModule(BaseMultiqcModule):
             len(self.jaccard_data) == 0 and len(self.frip_data) == 0 and
             len(self.preseq_data) == 0 and len(self.bam_correlation_data) == 0 and
             len(self.peaks_stats_data) == 0 and len(self.prealign_data) == 0 and
-            len(self.atacseq_data) == 0 and len(self.atacseq_tss_data) == 0):
+            len(self.atacseq_data) == 0 and len(self.atacseq_tss_data) == 0 and
+            len(self.replicate_correlations_data) == 0):
             raise ModuleNoSamplesFound
 
         # -----------------------------------------------------------
@@ -751,6 +768,122 @@ class MultiqcModule(BaseMultiqcModule):
             log.warning(f"Error parsing TSS file: {e}")
             return OrderedDict(), 0.0
 
+    def parse_replicate_correlations_tsv(self, f):
+        """ Parses the replicate correlations TSV file 
+        
+        Expected format:
+        rep1    rep2    pearson_r       pearson_p       spearman_r      spearman_p
+        test1-1 test1-2 0.9999999999999996      0.0     1.0     0.0
+        
+        Extracts pearson_p and stores it with the parent sample name (e.g., test1)
+        """
+        try:
+            lines = f['f'].splitlines()
+            if len(lines) < 2:
+                log.warning(f"Replicate correlations file {f.get('fn', 'unknown')} has insufficient lines")
+                return
+            
+            # Parse header
+            header = [col.strip() for col in lines[0].split('\t')]
+            if 'pearson_p' not in header:
+                log.warning(f"Replicate correlations file {f.get('fn', 'unknown')} missing 'pearson_p' column")
+                return
+            
+            pearson_p_idx = header.index('pearson_p')
+            rep1_idx = header.index('rep1')
+            
+            # Parse data rows
+            for line_idx, line in enumerate(lines[1:], start=1):
+                if not line.strip():
+                    continue
+                    
+                data_row = [val.strip() for val in line.split('\t')]
+                if len(data_row) <= max(pearson_p_idx, rep1_idx):
+                    continue
+                
+                try:
+                    rep1 = data_row[rep1_idx]
+                    pearson_p = float(data_row[pearson_p_idx])
+                    
+                    # Extract parent sample name (e.g., test1-1 -> test1)
+                    # Split on hyphen and take the first part
+                    parent_name = rep1.split('-')[0]
+                    
+                    # Store with parent sample name
+                    if parent_name not in self.replicate_correlations_data:
+                        self.replicate_correlations_data[parent_name] = {}
+                    
+                    self.replicate_correlations_data[parent_name]['pearson_p'] = pearson_p
+                    log.debug(f"Parsed replicate correlations for parent '{parent_name}': pearson_p={pearson_p}")
+                    
+                except (ValueError, IndexError) as e:
+                    log.warning(f"Replicate correlations file {f.get('fn', 'unknown')}: Could not parse row {line_idx}: {e}")
+                    continue
+                    
+        except Exception as e:
+            log.warning(f"Error parsing replicate correlations file {f.get('fn', 'unknown')}: {e}")
+
+    def parse_reproducibility_qc_json(self, f):
+        """ Parses the reproducibility QC JSON file 
+        
+        Expected format:
+        {
+          "prefix": "test1",
+          "rescue_ratio": null,
+          "self_consistency_ratio": 1.0,
+          "N_optimal": 988
+        }
+        
+        Extracts rescue_ratio, self_consistency_ratio, and N_optimal
+        and stores them with the prefix (parent sample name)
+        """
+        try:
+            data = json.loads(f['f'])
+            
+            # Extract prefix (parent sample name)
+            if 'prefix' not in data:
+                log.warning(f"Reproducibility QC file {f.get('fn', 'unknown')} missing 'prefix' key")
+                return
+            
+            prefix = data['prefix']
+            
+            # Initialize storage for this sample
+            if prefix not in self.reproducibility_qc_data:
+                self.reproducibility_qc_data[prefix] = {}
+            
+            # Extract rescue_ratio (can be null)
+            if 'rescue_ratio' in data:
+                rescue_ratio = data['rescue_ratio']
+                if rescue_ratio is not None:
+                    try:
+                        self.reproducibility_qc_data[prefix]['rescue_ratio'] = float(rescue_ratio)
+                    except (ValueError, TypeError):
+                        log.warning(f"Reproducibility QC file {f.get('fn', 'unknown')}: Could not convert rescue_ratio to float")
+                # If null, we don't store it (or could store as None, but None values are typically skipped in MultiQC)
+            
+            # Extract self_consistency_ratio
+            if 'self_consistency_ratio' in data:
+                try:
+                    self_consistency_ratio = float(data['self_consistency_ratio'])
+                    self.reproducibility_qc_data[prefix]['self_consistency_ratio'] = self_consistency_ratio
+                except (ValueError, TypeError) as e:
+                    log.warning(f"Reproducibility QC file {f.get('fn', 'unknown')}: Could not parse self_consistency_ratio: {e}")
+            
+            # Extract N_optimal
+            if 'N_optimal' in data:
+                try:
+                    n_optimal = int(data['N_optimal'])
+                    self.reproducibility_qc_data[prefix]['N_optimal'] = n_optimal
+                except (ValueError, TypeError) as e:
+                    log.warning(f"Reproducibility QC file {f.get('fn', 'unknown')}: Could not parse N_optimal: {e}")
+            
+            log.debug(f"Parsed reproducibility QC for '{prefix}': {self.reproducibility_qc_data[prefix]}")
+                
+        except json.JSONDecodeError as e:
+            log.warning(f"Failed to parse reproducibility QC JSON file {f.get('fn', 'unknown')}: {e}")
+        except Exception as e:
+            log.warning(f"Error parsing reproducibility QC file {f.get('fn', 'unknown')}: {e}")
+
     # ===============================================================
     # REPORT WRITING
     # ===============================================================
@@ -910,7 +1043,41 @@ class MultiqcModule(BaseMultiqcModule):
             'scale': 'Oranges'
         }
         
-        # 11. Define Headers for Samblaster/ATAC-seq Stats
+        # 11. Define Headers for Replicate Correlations
+        replicate_corr_headers = OrderedDict()
+        replicate_corr_headers['pearson_p'] = {
+            'title': 'Peak Correlation',
+            'description': 'Peak correlation p-value',
+            'min': 0,
+            'max': 1,
+            'format': '{:.4f}',
+            'scale': 'RdYlGn'
+        }
+        
+        # 12. Define Headers for Reproducibility QC
+        reproducibility_qc_headers = OrderedDict()
+        reproducibility_qc_headers['rescue_ratio'] = {
+            'title': 'Rescue Ratio',
+            'description': 'IDR rescue ratio',
+            'format': '{:.4f}',
+            'scale': 'RdYlGn'
+        }
+        reproducibility_qc_headers['self_consistency_ratio'] = {
+            'title': 'Self Consistency',
+            'description': 'Self-consistency ratio',
+            'min': 0,
+            'max': 1,
+            'format': '{:.4f}',
+            'scale': 'RdYlGn'
+        }
+        reproducibility_qc_headers['N_optimal'] = {
+            'title': 'N Optimal',
+            'description': 'Number of optimal peaks',
+            'format': '{:,.0f}',
+            'scale': 'Blues'
+        }
+        
+        # 13. Define Headers for Samblaster/ATAC-seq Stats
         samblaster_headers = OrderedDict()
         samblaster_headers['n_tot'] = {
             'title': 'Total\nAlignments',
@@ -940,7 +1107,7 @@ class MultiqcModule(BaseMultiqcModule):
             'min': 0
         }
 
-        # 12. Add to General Stats
+        # 14. Add to General Stats
         # We call this multiple times to merge data from different dictionaries
         self.general_stats_addcols(self.rnaseqc_data, rnaseqc_headers)
         self.general_stats_addcols(self.rsem_data, rsem_headers)
@@ -952,6 +1119,8 @@ class MultiqcModule(BaseMultiqcModule):
         self.general_stats_addcols(self.bam_correlation_data, bam_correlation_headers)
         self.general_stats_addcols(self.peaks_stats_data, peaks_stats_headers)
         self.general_stats_addcols(self.prealign_data, prealign_headers)
+        self.general_stats_addcols(self.replicate_correlations_data, replicate_corr_headers)
+        self.general_stats_addcols(self.reproducibility_qc_data, reproducibility_qc_headers)
         
         # Prepare samblaster data with proper type conversion
         samblaster_data = {}

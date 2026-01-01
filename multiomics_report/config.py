@@ -19,6 +19,12 @@ MAD_METRIC_KEYS = [
     'MAD of log ratios',
     'Pearson correlation',
     'Spearman correlation',
+    # Peak correlation p-value (from replicate_correlations.tsv)
+    'pearson_p',
+    # Reproducibility QC metrics (from *reproducibility.qc.json)
+    'rescue_ratio',
+    'self_consistency_ratio',
+    'N_optimal',
     # Jaccard metrics (from *_jaccard.txt)
     'jaccard',
     # BAM Correlation metrics (from *_bam_correlation_stats_mqc.tsv)
@@ -57,7 +63,8 @@ def before_config():
         '.genes', '_fastp',"_gene_type_count",
         "_coverage.tsv", "_peakcount.txt",
         "_jaccard.txt", "_bam_correlation_stats_mqc.tsv",
-        ".prealign.stats.tsv",".stats.tsv",".tss_histogram.csv",
+        ".prealign.stats.tsv",".stats.tsv",
+        ".tss_histogram.csv", ".replicate_correlations.tsv",
         {'type': 'remove', 'pattern': 'sambamba_markdup_'},  # Remove prefix
         {'type': 'remove', 'pattern': 'bowtie2_'},            # Remove prefix
         {'type': 'remove', 'pattern': '.err'},                 # Remove suffix

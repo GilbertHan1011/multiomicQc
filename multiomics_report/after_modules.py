@@ -153,6 +153,48 @@ def _extract_reproducibility_headers() -> OrderedDict:
             'min': 0, 'max': 1, 'format': '{:.4f}', 'scale': 'RdYlGn', 'namespace': 'multiomics'
         }
     
+    # Add pearson_p header if missing
+    if ColumnKey('pearson_p') not in mad_headers:
+        mad_headers[ColumnKey('pearson_p')] = {
+            'title': 'Peak Correlation',
+            'description': 'Peak correlation p-value',
+            'min': 0,
+            'max': 1,
+            'format': '{:.4f}',
+            'scale': 'RdYlGn',
+            'namespace': 'multiomics'
+        }
+    
+    # Add reproducibility QC headers if missing
+    if ColumnKey('rescue_ratio') not in mad_headers:
+        mad_headers[ColumnKey('rescue_ratio')] = {
+            'title': 'Rescue Ratio',
+            'description': 'IDR rescue ratio',
+            'format': '{:.4f}',
+            'scale': 'RdYlGn',
+            'namespace': 'multiomics'
+        }
+    
+    if ColumnKey('self_consistency_ratio') not in mad_headers:
+        mad_headers[ColumnKey('self_consistency_ratio')] = {
+            'title': 'Self Consistency',
+            'description': 'Self-consistency ratio',
+            'min': 0,
+            'max': 1,
+            'format': '{:.4f}',
+            'scale': 'RdYlGn',
+            'namespace': 'multiomics'
+        }
+    
+    if ColumnKey('N_optimal') not in mad_headers:
+        mad_headers[ColumnKey('N_optimal')] = {
+            'title': 'N Optimal',
+            'description': 'Number of optimal peaks',
+            'format': '{:,.0f}',
+            'scale': 'Blues',
+            'namespace': 'multiomics'
+        }
+    
     # Add jaccard header if missing
     if ColumnKey('Jaccard_Similarity') not in mad_headers:
         log.debug("Plugin: Creating default jaccard header")
