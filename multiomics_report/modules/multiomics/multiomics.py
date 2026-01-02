@@ -39,6 +39,7 @@ class MultiqcModule(BaseMultiqcModule):
         self.hic_mapstat_data = dict()  # Stores Hi-C BAM mapping statistics (mapped_rate, etc.)
         self.hic_pairstat_data = dict()  # Stores Hi-C pair alignment statistics
         self.hic_rsstat_data = dict()  # Stores Hi-C processing statistics (RSstat)
+        self.hic_dedup_stats_data = dict()  # Stores Hi-C deduplication statistics
         # -----------------------------------------------------------
         # 3. PARSING LOGIC
         # -----------------------------------------------------------
@@ -155,6 +156,12 @@ class MultiqcModule(BaseMultiqcModule):
         log.debug(f"[DEBUG] Found {len(hic_rsstat_files)} Hi-C RSstat files")
         for f in hic_rsstat_files:
             self.parse_hic_rsstat(f)
+        
+        # T. Parse Hi-C deduplication statistics (dedup.stats files)
+        hic_dedup_files = list(self.find_log_files('multiomics_report/dedup_stats'))
+        log.debug(f"[DEBUG] Found {len(hic_dedup_files)} Hi-C dedup stats files")
+        for f in hic_dedup_files:
+            self.parse_hic_dedup_stats(f)
         # -----------------------------------------------------------
         # 4. FILTERING & EXIT
         # -----------------------------------------------------------
@@ -178,6 +185,7 @@ class MultiqcModule(BaseMultiqcModule):
         self.hic_mapstat_data = self.ignore_samples(self.hic_mapstat_data)
         self.hic_pairstat_data = self.ignore_samples(self.hic_pairstat_data)
         self.hic_rsstat_data = self.ignore_samples(self.hic_rsstat_data)
+        self.hic_dedup_stats_data = self.ignore_samples(self.hic_dedup_stats_data)
         
         # If no data found at all, raise ModuleNoSamplesFound
         if (len(self.rnaseqc_data) == 0 and len(self.genetype_data) == 0 and 
@@ -188,7 +196,8 @@ class MultiqcModule(BaseMultiqcModule):
             len(self.peaks_stats_data) == 0 and len(self.prealign_data) == 0 and
             len(self.atacseq_data) == 0 and len(self.atacseq_tss_data) == 0 and
             len(self.replicate_correlations_data) == 0 and len(self.hic_mapstat_data) == 0 and
-            len(self.hic_pairstat_data) == 0 and len(self.hic_rsstat_data) == 0):
+            len(self.hic_pairstat_data) == 0 and len(self.hic_rsstat_data) == 0 and
+            len(self.hic_dedup_stats_data) == 0):
             raise ModuleNoSamplesFound
 
         # -----------------------------------------------------------
@@ -1001,6 +1010,24 @@ class MultiqcModule(BaseMultiqcModule):
                         # Skip if not numeric
                         continue
             
+            # Calculate Mapped_ratio = 1 - (Unmapped_pairs / Total_pairs_processed)
+            if 'Unmapped_pairs' in parsed_data and 'Total_pairs_processed' in parsed_data:
+                total_pairs = parsed_data['Total_pairs_processed']
+                if total_pairs > 0:
+                    unmapped = parsed_data['Unmapped_pairs']
+                    mapped_ratio = 1.0 - (float(unmapped) / float(total_pairs))
+                    parsed_data['Mapped_ratio'] = mapped_ratio
+                    log.debug(f"Calculated Mapped_ratio for '{f['s_name']}': {mapped_ratio:.4f}")
+            
+            # Calculate unique_ratio = Unique_paired_alignments / Total_pairs_processed
+            if 'Unique_paired_alignments' in parsed_data and 'Total_pairs_processed' in parsed_data:
+                total_pairs = parsed_data['Total_pairs_processed']
+                if total_pairs > 0:
+                    unique_pairs = parsed_data['Unique_paired_alignments']
+                    unique_ratio = float(unique_pairs) / float(total_pairs)
+                    parsed_data['unique_ratio'] = unique_ratio
+                    log.debug(f"Calculated unique_ratio for '{f['s_name']}': {unique_ratio:.4f}")
+            
             if parsed_data:
                 self.hic_pairstat_data[f['s_name']] = parsed_data
                 log.debug(f"Parsed Hi-C pairstat for '{f['s_name']}': {parsed_data}")
@@ -1052,6 +1079,84 @@ class MultiqcModule(BaseMultiqcModule):
                 
         except Exception as e:
             log.warning(f"Error parsing Hi-C RSstat file {f.get('fn', 'unknown')}: {e}")
+
+    def parse_hic_dedup_stats(self, f):
+        """ Parses the Hi-C deduplication statistics file (dedup.stats)
+        
+        Expected format:
+        total   13801
+        total_unmapped  0
+        total_single_sided_mapped       0
+        total_mapped    13801
+        total_dups      1475
+        total_nodups    12326
+        cis     9056
+        trans   3270
+        cis_2kb+        5000
+        pair_types/UU   12326
+        pair_types/DD   1475
+        summary/frac_dups   0.1069
+        """
+        try:
+            parsed_data = {}
+            
+            for line in f['f'].splitlines():
+                if not line.strip():
+                    continue
+                
+                parts = line.split()
+                if len(parts) >= 2:
+                    key = parts[0].strip()
+                    try:
+                        value = int(float(parts[1].strip()))
+                        parsed_data[key] = value
+                    except ValueError:
+                        # Try as float for frac_dups
+                        try:
+                            value = float(parts[1].strip())
+                            parsed_data[key] = value
+                        except ValueError:
+                            # Skip non-numeric values
+                            continue
+            
+            # Handle cis_2kb+ or cis_2kb field name variations
+            cis_2kb_value = None
+            for key in ['cis_2kb+', 'cis_2kb', 'cis_2kb_plus']:
+                if key in parsed_data:
+                    cis_2kb_value = parsed_data[key]
+                    # Normalize to cis_2kb for easier access
+                    if key != 'cis_2kb':
+                        parsed_data['cis_2kb'] = cis_2kb_value
+                    break
+            
+            # Normalize summary/frac_dups to frac_dups
+            if 'summary/frac_dups' in parsed_data:
+                parsed_data['frac_dups'] = parsed_data['summary/frac_dups']
+            
+            # Calculate frac_trans = trans / total
+            if 'trans' in parsed_data and 'total' in parsed_data:
+                total = parsed_data['total']
+                if total > 0:
+                    frac_trans = float(parsed_data['trans']) / float(total)
+                    parsed_data['frac_trans'] = frac_trans
+                    log.debug(f"Calculated frac_trans for '{f['s_name']}': {frac_trans:.4f}")
+            
+            # Calculate cis_trans_ratio = cis / trans
+            if 'cis' in parsed_data and 'trans' in parsed_data:
+                trans = parsed_data['trans']
+                if trans > 0:
+                    cis_trans_ratio = float(parsed_data['cis']) / float(trans)
+                    parsed_data['cis_trans_ratio'] = cis_trans_ratio
+                    log.debug(f"Calculated cis_trans_ratio for '{f['s_name']}': {cis_trans_ratio:.4f}")
+            
+            if parsed_data:
+                self.hic_dedup_stats_data[f['s_name']] = parsed_data
+                log.debug(f"Parsed Hi-C dedup stats for '{f['s_name']}': {parsed_data}")
+            else:
+                log.warning(f"Hi-C dedup stats file {f.get('fn', 'unknown')} has no valid data")
+                
+        except Exception as e:
+            log.warning(f"Error parsing Hi-C dedup stats file {f.get('fn', 'unknown')}: {e}")
 
     # ===============================================================
     # REPORT WRITING
@@ -1322,6 +1427,22 @@ class MultiqcModule(BaseMultiqcModule):
             'format': '{:,.0f}',
             'scale': 'Blues'
         }
+        hic_pairstat_headers['Mapped_ratio'] = {
+            'title': 'Hi-C Mapped Ratio',
+            'description': 'Hi-C: Mapped ratio (1 - Unmapped_pairs/Total_pairs_processed)',
+            'min': 0,
+            'max': 1,
+            'format': '{:.4f}',
+            'scale': 'RdYlGn'
+        }
+        hic_pairstat_headers['unique_ratio'] = {
+            'title': 'Hi-C Unique Ratio',
+            'description': 'Hi-C: Unique paired alignments ratio (Unique_paired_alignments/Total_pairs_processed)',
+            'min': 0,
+            'max': 1,
+            'format': '{:.4f}',
+            'scale': 'RdYlGn'
+        }
         
         # 16. Define Headers for Hi-C Processing Stats (RSstat)
         hic_rsstat_headers = OrderedDict()
@@ -1343,6 +1464,98 @@ class MultiqcModule(BaseMultiqcModule):
             'format': '{:,.0f}',
             'scale': 'Oranges'
         }
+        hic_rsstat_headers['dangling_rate'] = {
+            'title': 'Hi-C Dangling Rate',
+            'description': 'Hi-C: Dangling end pairs rate (Dangling_end_pairs/Total_pairs_processed)',
+            'min': 0,
+            'max': 1,
+            'format': '{:.4f}',
+            'scale': 'OrRd'
+        }
+        hic_rsstat_headers['self_ligation_rate'] = {
+            'title': 'Hi-C Self-Ligation Rate',
+            'description': 'Hi-C: Self-ligation rate ((Self_Cycle_pairs+Religation_pairs)/Total_pairs_processed)',
+            'min': 0,
+            'max': 1,
+            'format': '{:.4f}',
+            'scale': 'OrRd'
+        }
+        
+        # 17. Define Headers for Hi-C Deduplication Stats
+        hic_dedup_headers = OrderedDict()
+        hic_dedup_headers['frac_dups'] = {
+            'title': 'Hi-C Frac Dups',
+            'description': 'Hi-C: Fraction of duplicates (from summary/frac_dups)',
+            'min': 0,
+            'max': 1,
+            'format': '{:.4f}',
+            'scale': 'OrRd'
+        }
+        hic_dedup_headers['frac_cis2k'] = {
+            'title': 'Hi-C Frac Cis 2kb',
+            'description': 'Hi-C: Fraction of cis interactions within 2kb (cis_2kb/Total_pairs_processed)',
+            'min': 0,
+            'max': 1,
+            'format': '{:.4f}',
+            'scale': 'Blues'
+        }
+        hic_dedup_headers['frac_trans'] = {
+            'title': 'Hi-C Frac Trans',
+            'description': 'Hi-C: Fraction of trans interactions (trans/total)',
+            'min': 0,
+            'max': 1,
+            'format': '{:.4f}',
+            'scale': 'Blues'
+        }
+        hic_dedup_headers['cis_trans_ratio'] = {
+            'title': 'Hi-C Cis/Trans Ratio',
+            'description': 'Hi-C: Ratio of cis to trans interactions (cis/trans)',
+            'min': 0,
+            'format': '{:.4f}',
+            'scale': 'RdYlGn'
+        }
+
+        # Calculate cross-file metrics before adding to general stats
+        # Match data across files by sample name
+        all_samples = set()
+        all_samples.update(self.hic_pairstat_data.keys())
+        all_samples.update(self.hic_rsstat_data.keys())
+        all_samples.update(self.hic_dedup_stats_data.keys())
+        
+        for sample_name in all_samples:
+            # Get Total_pairs_processed from pairstat data
+            total_pairs_processed = None
+            if sample_name in self.hic_pairstat_data:
+                total_pairs_processed = self.hic_pairstat_data[sample_name].get('Total_pairs_processed')
+            
+            # Calculate RSstat metrics if Total_pairs_processed is available
+            if sample_name in self.hic_rsstat_data and total_pairs_processed is not None and total_pairs_processed > 0:
+                rsstat_data = self.hic_rsstat_data[sample_name]
+                
+                # Calculate dangling_rate = Dangling_end_pairs / Total_pairs_processed
+                if 'Dangling_end_pairs' in rsstat_data:
+                    dangling_pairs = rsstat_data['Dangling_end_pairs']
+                    dangling_rate = float(dangling_pairs) / float(total_pairs_processed)
+                    rsstat_data['dangling_rate'] = dangling_rate
+                    log.debug(f"Calculated dangling_rate for '{sample_name}': {dangling_rate:.4f}")
+                
+                # Calculate self_ligation_rate = (Self_Cycle_pairs + Religation_pairs) / Total_pairs_processed
+                self_cycle = rsstat_data.get('Self_Cycle_pairs', 0)
+                religation = rsstat_data.get('Religation_pairs', 0)
+                self_ligation_rate = float(self_cycle + religation) / float(total_pairs_processed)
+                rsstat_data['self_ligation_rate'] = self_ligation_rate
+                log.debug(f"Calculated self_ligation_rate for '{sample_name}': {self_ligation_rate:.4f}")
+            
+            # Calculate dedup metrics if Total_pairs_processed is available
+            if sample_name in self.hic_dedup_stats_data and total_pairs_processed is not None and total_pairs_processed > 0:
+                dedup_data = self.hic_dedup_stats_data[sample_name]
+                
+                # Calculate frac_cis2k = cis_2kb / Total_pairs_processed
+                cis_2kb = dedup_data.get('cis_2kb')
+                if cis_2kb is not None:
+                    frac_cis2k = float(cis_2kb) / float(total_pairs_processed)
+                    dedup_data['frac_cis2k'] = frac_cis2k
+                    log.debug(f"Calculated frac_cis2k for '{sample_name}': {frac_cis2k:.4f}")
 
         # 17. Add to General Stats
         # We call this multiple times to merge data from different dictionaries
@@ -1397,6 +1610,7 @@ class MultiqcModule(BaseMultiqcModule):
         self.general_stats_addcols(self.hic_mapstat_data, hic_mapstat_headers)
         self.general_stats_addcols(self.hic_pairstat_data, hic_pairstat_headers)
         self.general_stats_addcols(self.hic_rsstat_data, hic_rsstat_headers)
+        self.general_stats_addcols(self.hic_dedup_stats_data, hic_dedup_headers)
 
     def write_gene_type_plot(self):
         """ Creates a Stacked Bar Plot for Gene Types """
