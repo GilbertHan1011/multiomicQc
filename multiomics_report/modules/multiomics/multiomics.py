@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from collections import OrderedDict
 from multiqc.base_module import BaseMultiqcModule, ModuleNoSamplesFound
 from multiqc import config
@@ -1256,8 +1257,10 @@ class MultiqcModule(BaseMultiqcModule):
                 return
             
             if parsed_data:
-                self.hic_dist_contact_data[f['s_name']] = parsed_data
-                log.debug(f"Parsed Hi-C distance vs contact for '{f['s_name']}': {parsed_data}")
+                # Clean sample name: remove .mapq and anything after it (e.g., .mapq_30.1000)
+                clean_sample_name = re.sub(r'\.mapq.*$', '', f['s_name'])
+                self.hic_dist_contact_data[clean_sample_name] = parsed_data
+                log.debug(f"Parsed Hi-C distance vs contact for '{clean_sample_name}' (from '{f['s_name']}'): {parsed_data}")
             else:
                 log.warning(f"Hi-C distance vs contact file {f.get('fn', 'unknown')} has no valid data")
                 
@@ -1331,8 +1334,10 @@ class MultiqcModule(BaseMultiqcModule):
                 return
             
             if parsed_data:
-                self.hic_loop_counts_data[f['s_name']] = parsed_data
-                log.debug(f"Parsed Hi-C loop counts for '{f['s_name']}': {parsed_data}")
+                # Clean sample name: remove .mapq and anything after it (e.g., .mapq_30.1000)
+                clean_sample_name = re.sub(r'\.mapq.*$', '', f['s_name'])
+                self.hic_loop_counts_data[clean_sample_name] = parsed_data
+                log.debug(f"Parsed Hi-C loop counts for '{clean_sample_name}' (from '{f['s_name']}'): {parsed_data}")
             else:
                 log.warning(f"Hi-C loop counts file {f.get('fn', 'unknown')} has no valid data")
                 

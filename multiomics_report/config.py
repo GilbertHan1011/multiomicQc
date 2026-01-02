@@ -71,7 +71,8 @@ def before_config():
         {'type': 'remove', 'pattern': 'bowtie2_'},            # Remove prefix
         {'type': 'remove', 'pattern': '.err'},                 # Remove suffix
         {'type': 'remove', 'pattern': 'frip_'}, 
-        {'type': 'remove', 'pattern': 'lcextrap_'}, 
+        {'type': 'remove', 'pattern': 'lcextrap_'},
+        {'type': 'remove', 'pattern': r'\.mapq.*'},  # Remove .mapq and anything after it (e.g., .mapq_30.1000) 
     ]
     # Prepend to ensure higher priority
     config.fn_clean_exts[0:0] = extra_exts
