@@ -65,6 +65,7 @@ def before_config():
         "_jaccard.txt", "_bam_correlation_stats_mqc.tsv",
         ".prealign.stats.tsv",".stats.tsv",
         ".tss_histogram.csv", ".replicate_correlations.tsv",
+        ".mapstat", ".pairstat", "hicpro.RSstat", '.dedup.stats',
         {'type': 'remove', 'pattern': 'sambamba_markdup_'},  # Remove prefix
         {'type': 'remove', 'pattern': 'bowtie2_'},            # Remove prefix
         {'type': 'remove', 'pattern': '.err'},                 # Remove suffix
@@ -89,7 +90,10 @@ def before_config():
         config.table_sample_merge = {}
     
     merge_rule = {
-        '': [{'type': 'regex', 'pattern': r'(_run|_)\d+$'}]
+        '': [
+            {'type': 'regex', 'pattern': r'(_run|_)\d+$'},
+            {'type': 'regex', 'pattern': r'(_R|_)\d+$'}
+        ]
     }
     config.table_sample_merge.update(merge_rule)
 

@@ -36,6 +36,9 @@ class MultiqcModule(BaseMultiqcModule):
         self.atacseq_tss_data = dict()  # Stores TSS coverage data (downsampled for plotting)
         self.replicate_correlations_data = dict()  # Stores replicate correlation data (pearson_p)
         self.reproducibility_qc_data = dict()  # Stores reproducibility QC data (rescue_ratio, self_consistency_ratio, N_optimal)
+        self.hic_mapstat_data = dict()  # Stores Hi-C BAM mapping statistics (mapped_rate, etc.)
+        self.hic_pairstat_data = dict()  # Stores Hi-C pair alignment statistics
+        self.hic_rsstat_data = dict()  # Stores Hi-C processing statistics (RSstat)
         # -----------------------------------------------------------
         # 3. PARSING LOGIC
         # -----------------------------------------------------------
@@ -134,6 +137,24 @@ class MultiqcModule(BaseMultiqcModule):
         log.debug(f"[DEBUG] Found {len(reproducibility_qc_files)} reproducibility QC files")
         for f in reproducibility_qc_files:
             self.parse_reproducibility_qc_json(f)
+        
+        # Q. Parse Hi-C BAM mapping statistics (mapstat files)
+        hic_mapstat_files = list(self.find_log_files('multiomics_report/hic_mapstat'))
+        log.debug(f"[DEBUG] Found {len(hic_mapstat_files)} Hi-C mapstat files")
+        for f in hic_mapstat_files:
+            self.parse_hic_mapstat(f)
+        
+        # R. Parse Hi-C pair alignment statistics (pairstat files)
+        hic_pairstat_files = list(self.find_log_files('multiomics_report/hic_pairstat'))
+        log.debug(f"[DEBUG] Found {len(hic_pairstat_files)} Hi-C pairstat files")
+        for f in hic_pairstat_files:
+            self.parse_hic_pairstat(f)
+        
+        # S. Parse Hi-C processing statistics (RSstat files)
+        hic_rsstat_files = list(self.find_log_files('multiomics_report/RSstat'))
+        log.debug(f"[DEBUG] Found {len(hic_rsstat_files)} Hi-C RSstat files")
+        for f in hic_rsstat_files:
+            self.parse_hic_rsstat(f)
         # -----------------------------------------------------------
         # 4. FILTERING & EXIT
         # -----------------------------------------------------------
@@ -154,6 +175,9 @@ class MultiqcModule(BaseMultiqcModule):
         self.atacseq_tss_data = self.ignore_samples(self.atacseq_tss_data)
         self.replicate_correlations_data = self.ignore_samples(self.replicate_correlations_data)
         self.reproducibility_qc_data = self.ignore_samples(self.reproducibility_qc_data)
+        self.hic_mapstat_data = self.ignore_samples(self.hic_mapstat_data)
+        self.hic_pairstat_data = self.ignore_samples(self.hic_pairstat_data)
+        self.hic_rsstat_data = self.ignore_samples(self.hic_rsstat_data)
         
         # If no data found at all, raise ModuleNoSamplesFound
         if (len(self.rnaseqc_data) == 0 and len(self.genetype_data) == 0 and 
@@ -163,7 +187,8 @@ class MultiqcModule(BaseMultiqcModule):
             len(self.preseq_data) == 0 and len(self.bam_correlation_data) == 0 and
             len(self.peaks_stats_data) == 0 and len(self.prealign_data) == 0 and
             len(self.atacseq_data) == 0 and len(self.atacseq_tss_data) == 0 and
-            len(self.replicate_correlations_data) == 0):
+            len(self.replicate_correlations_data) == 0 and len(self.hic_mapstat_data) == 0 and
+            len(self.hic_pairstat_data) == 0 and len(self.hic_rsstat_data) == 0):
             raise ModuleNoSamplesFound
 
         # -----------------------------------------------------------
@@ -884,6 +909,150 @@ class MultiqcModule(BaseMultiqcModule):
         except Exception as e:
             log.warning(f"Error parsing reproducibility QC file {f.get('fn', 'unknown')}: {e}")
 
+    def parse_hic_mapstat(self, f):
+        """ Parses the Hi-C BAM mapping statistics file (mapstat)
+        
+        Expected format:
+        ## /path/to/file
+        total_1 24859
+        mapped_1        24155
+        global_1        9174
+        local_1 14981
+        
+        Calculates: mapped_rate = mapped_1 / total_1
+        """
+        try:
+            parsed_data = {}
+            total_1 = None
+            mapped_1 = None
+            
+            for line in f['f'].splitlines():
+                if not line.strip() or line.strip().startswith('##'):
+                    continue
+                
+                parts = line.split()
+                if len(parts) >= 2:
+                    key = parts[0].strip()
+                    try:
+                        value = int(parts[1].strip())
+                        parsed_data[key] = value
+                        
+                        if key == 'total_1':
+                            total_1 = value
+                        elif key == 'mapped_1':
+                            mapped_1 = value
+                    except ValueError:
+                        # Skip non-numeric values
+                        continue
+            
+            # Calculate mapped_rate
+            if total_1 is not None and total_1 > 0 and mapped_1 is not None:
+                mapped_rate = float(mapped_1) / float(total_1)
+                parsed_data['mapped_rate'] = mapped_rate
+                log.debug(f"Calculated mapped_rate for '{f['s_name']}': {mapped_rate:.4f} ({mapped_1}/{total_1})")
+            
+            if parsed_data:
+                self.hic_mapstat_data[f['s_name']] = parsed_data
+                log.debug(f"Parsed Hi-C mapstat for '{f['s_name']}': {parsed_data}")
+            else:
+                log.warning(f"Hi-C mapstat file {f.get('fn', 'unknown')} has no valid data")
+                
+        except Exception as e:
+            log.warning(f"Error parsing Hi-C mapstat file {f.get('fn', 'unknown')}: {e}")
+
+    def parse_hic_pairstat(self, f):
+        """ Parses the Hi-C pair alignment statistics file (pairstat)
+        
+        Expected format:
+        Total_pairs_processed   24859   100.0
+        Unmapped_pairs  197     0.792
+        Low_qual_pairs  9787    39.37
+        Unique_paired_alignments        13801   55.517
+        Multiple_pairs_alignments       0       0.0
+        Pairs_with_singleton    1074    4.32
+        Low_qual_singleton      0       0.0
+        Unique_singleton_alignments     0       0.0
+        Multiple_singleton_alignments   0       0.0
+        Reported_pairs  13801   55.517
+        """
+        try:
+            parsed_data = {}
+            
+            for line in f['f'].splitlines():
+                if not line.strip():
+                    continue
+                
+                parts = line.split('\t')
+                if len(parts) >= 2:
+                    key = parts[0].strip()
+                    try:
+                        # Try to get the count (second column) and percentage (third column if available)
+                        count = int(float(parts[1].strip()))
+                        parsed_data[key] = count
+                        
+                        # Also store percentage if available
+                        if len(parts) >= 3:
+                            try:
+                                percentage = float(parts[2].strip())
+                                parsed_data[f"{key}_percent"] = percentage
+                            except ValueError:
+                                pass
+                    except (ValueError, IndexError):
+                        # Skip if not numeric
+                        continue
+            
+            if parsed_data:
+                self.hic_pairstat_data[f['s_name']] = parsed_data
+                log.debug(f"Parsed Hi-C pairstat for '{f['s_name']}': {parsed_data}")
+            else:
+                log.warning(f"Hi-C pairstat file {f.get('fn', 'unknown')} has no valid data")
+                
+        except Exception as e:
+            log.warning(f"Error parsing Hi-C pairstat file {f.get('fn', 'unknown')}: {e}")
+
+    def parse_hic_rsstat(self, f):
+        """ Parses the Hi-C processing statistics file (RSstat)
+        
+        Expected format:
+        ## Hi-C processing
+        Valid_interaction_pairs 13247
+        Valid_interaction_pairs_FF      3374
+        Valid_interaction_pairs_RR      3293
+        Valid_interaction_pairs_RF      3228
+        Valid_interaction_pairs_FR      3352
+        Dangling_end_pairs      443
+        Religation_pairs        103
+        Self_Cycle_pairs        8
+        Single-end_pairs        0
+        Filtered_pairs  0
+        Dumped_pairs    0
+        """
+        try:
+            parsed_data = {}
+            
+            for line in f['f'].splitlines():
+                if not line.strip() or line.strip().startswith('##'):
+                    continue
+                
+                parts = line.split()
+                if len(parts) >= 2:
+                    key = parts[0].strip()
+                    try:
+                        value = int(parts[1].strip())
+                        parsed_data[key] = value
+                    except ValueError:
+                        # Skip non-numeric values
+                        continue
+            
+            if parsed_data:
+                self.hic_rsstat_data[f['s_name']] = parsed_data
+                log.debug(f"Parsed Hi-C RSstat for '{f['s_name']}': {parsed_data}")
+            else:
+                log.warning(f"Hi-C RSstat file {f.get('fn', 'unknown')} has no valid data")
+                
+        except Exception as e:
+            log.warning(f"Error parsing Hi-C RSstat file {f.get('fn', 'unknown')}: {e}")
+
     # ===============================================================
     # REPORT WRITING
     # ===============================================================
@@ -1106,8 +1275,76 @@ class MultiqcModule(BaseMultiqcModule):
             'scale': 'RdYlGn',
             'min': 0
         }
+        
+        # 14. Define Headers for Hi-C BAM Mapping Stats
+        hic_mapstat_headers = OrderedDict()
+        hic_mapstat_headers['mapped_rate'] = {
+            'title': 'Hi-C Mapped Rate',
+            'description': 'Hi-C: Mapped reads rate (mapped_1/total_1)',
+            'min': 0,
+            'max': 1,
+            'format': '{:.4f}',
+            'scale': 'RdYlGn'
+        }
+        hic_mapstat_headers['mapped_1'] = {
+            'title': 'Hi-C Mapped',
+            'description': 'Hi-C: Number of mapped reads',
+            'format': '{:,.0f}',
+            'scale': 'Blues'
+        }
+        hic_mapstat_headers['total_1'] = {
+            'title': 'Hi-C Total',
+            'description': 'Hi-C: Total number of reads',
+            'format': '{:,.0f}',
+            'scale': 'Blues'
+        }
+        
+        # 15. Define Headers for Hi-C Pair Alignment Stats
+        hic_pairstat_headers = OrderedDict()
+        hic_pairstat_headers['Unique_paired_alignments'] = {
+            'title': 'Hi-C Unique Pairs',
+            'description': 'Hi-C: Number of unique paired alignments',
+            'format': '{:,.0f}',
+            'scale': 'Greens'
+        }
+        hic_pairstat_headers['Unique_paired_alignments_percent'] = {
+            'title': 'Hi-C Unique %',
+            'description': 'Hi-C: Percentage of unique paired alignments',
+            'min': 0,
+            'max': 100,
+            'suffix': '%',
+            'format': '{:.2f}',
+            'scale': 'Greens'
+        }
+        hic_pairstat_headers['Total_pairs_processed'] = {
+            'title': 'Hi-C Total Pairs',
+            'description': 'Hi-C: Total pairs processed',
+            'format': '{:,.0f}',
+            'scale': 'Blues'
+        }
+        
+        # 16. Define Headers for Hi-C Processing Stats (RSstat)
+        hic_rsstat_headers = OrderedDict()
+        hic_rsstat_headers['Valid_interaction_pairs'] = {
+            'title': 'Hi-C Valid Pairs',
+            'description': 'Hi-C: Number of valid interaction pairs',
+            'format': '{:,.0f}',
+            'scale': 'Greens'
+        }
+        hic_rsstat_headers['Dangling_end_pairs'] = {
+            'title': 'Hi-C Dangling',
+            'description': 'Hi-C: Number of dangling end pairs',
+            'format': '{:,.0f}',
+            'scale': 'Oranges'
+        }
+        hic_rsstat_headers['Religation_pairs'] = {
+            'title': 'Hi-C Religation',
+            'description': 'Hi-C: Number of religation pairs',
+            'format': '{:,.0f}',
+            'scale': 'Oranges'
+        }
 
-        # 14. Add to General Stats
+        # 17. Add to General Stats
         # We call this multiple times to merge data from different dictionaries
         self.general_stats_addcols(self.rnaseqc_data, rnaseqc_headers)
         self.general_stats_addcols(self.rsem_data, rsem_headers)
@@ -1157,6 +1394,9 @@ class MultiqcModule(BaseMultiqcModule):
         
         self.general_stats_addcols(samblaster_data, samblaster_headers)
         self.general_stats_addcols(self.mad_data, mad_headers)
+        self.general_stats_addcols(self.hic_mapstat_data, hic_mapstat_headers)
+        self.general_stats_addcols(self.hic_pairstat_data, hic_pairstat_headers)
+        self.general_stats_addcols(self.hic_rsstat_data, hic_rsstat_headers)
 
     def write_gene_type_plot(self):
         """ Creates a Stacked Bar Plot for Gene Types """

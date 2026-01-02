@@ -43,6 +43,10 @@ def execution_start():
         'multiomics_report/samblaster': {'fn': "*.samblaster.log", 'contents': 'Marked'},  
         'multiomics_report/replicate_correlations': {'fn': "*replicate_correlations.tsv"},
         'multiomics_report/reproducibility_qc': {'fn': "*reproducibility.qc.json", 'contents': 'reproducibility'},
+        'multiomics_report/hic_mapstat' :{'fn': "*.mapstat", 'contents': 'total'},
+        'multiomics_report/hic_pairstat' :{'fn': "*.pairstat"},
+        'multiomics_report/RSstat' :{'fn': "*.RSstat"},
+        'multiomics_report/dedup_stats' :{'fn': "*.dedup.stats"},
     }
     
     # Modify custom_content search pattern to exclude correlation files
