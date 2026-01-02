@@ -65,7 +65,8 @@ def before_config():
         "_jaccard.txt", "_bam_correlation_stats_mqc.tsv",
         ".prealign.stats.tsv",".stats.tsv",
         ".tss_histogram.csv", ".replicate_correlations.tsv",
-        ".mapstat", ".pairstat", "hicpro.RSstat", '.dedup.stats',
+        ".mapstat", ".pairstat", "hicpro.RSstat", 
+        '.dedup.stats', '_loglog_fits.csv', '.loop_counts.tsv', 'complexity',
         {'type': 'remove', 'pattern': 'sambamba_markdup_'},  # Remove prefix
         {'type': 'remove', 'pattern': 'bowtie2_'},            # Remove prefix
         {'type': 'remove', 'pattern': '.err'},                 # Remove suffix

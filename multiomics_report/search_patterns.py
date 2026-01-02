@@ -47,6 +47,9 @@ def execution_start():
         'multiomics_report/hic_pairstat' :{'fn': "*.pairstat"},
         'multiomics_report/RSstat' :{'fn': "*.RSstat"},
         'multiomics_report/dedup_stats' :{'fn': "*.dedup.stats"},
+        'multiomics_report/hic_dist_contact': {'fn': "*_loglog_fits.csv", 'contents': 'slope'},
+        'multiomics_report/hic_loop_counts': {'fn': "*.loop_counts.tsv", 'contents': 'total'},
+        'multiomics_report/hic_library_complexity': {'fn': "*complexity*.tsv", 'contents': 'C'},
     }
     
     # Modify custom_content search pattern to exclude correlation files

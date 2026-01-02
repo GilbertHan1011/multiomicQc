@@ -40,6 +40,9 @@ class MultiqcModule(BaseMultiqcModule):
         self.hic_pairstat_data = dict()  # Stores Hi-C pair alignment statistics
         self.hic_rsstat_data = dict()  # Stores Hi-C processing statistics (RSstat)
         self.hic_dedup_stats_data = dict()  # Stores Hi-C deduplication statistics
+        self.hic_dist_contact_data = dict()  # Stores Hi-C distance vs contact statistics (slope, mse)
+        self.hic_loop_counts_data = dict()  # Stores Hi-C loop counts statistics (total loop count)
+        self.hic_library_complexity_data = dict()  # Stores Hi-C library complexity statistics (C)
         # -----------------------------------------------------------
         # 3. PARSING LOGIC
         # -----------------------------------------------------------
@@ -162,6 +165,24 @@ class MultiqcModule(BaseMultiqcModule):
         log.debug(f"[DEBUG] Found {len(hic_dedup_files)} Hi-C dedup stats files")
         for f in hic_dedup_files:
             self.parse_hic_dedup_stats(f)
+        
+        # U. Parse Hi-C distance vs contact statistics (loglog_fits.csv files)
+        hic_dist_contact_files = list(self.find_log_files('multiomics_report/hic_dist_contact'))
+        log.debug(f"[DEBUG] Found {len(hic_dist_contact_files)} Hi-C distance vs contact files")
+        for f in hic_dist_contact_files:
+            self.parse_hic_dist_contact_csv(f)
+        
+        # V. Parse Hi-C loop counts statistics (loop_counts.tsv files)
+        hic_loop_counts_files = list(self.find_log_files('multiomics_report/hic_loop_counts'))
+        log.debug(f"[DEBUG] Found {len(hic_loop_counts_files)} Hi-C loop counts files")
+        for f in hic_loop_counts_files:
+            self.parse_hic_loop_counts_tsv(f)
+        
+        # W. Parse Hi-C library complexity statistics (complexity*.tsv files)
+        hic_complexity_files = list(self.find_log_files('multiomics_report/hic_library_complexity'))
+        log.debug(f"[DEBUG] Found {len(hic_complexity_files)} Hi-C library complexity files")
+        for f in hic_complexity_files:
+            self.parse_hic_library_complexity_tsv(f)
         # -----------------------------------------------------------
         # 4. FILTERING & EXIT
         # -----------------------------------------------------------
@@ -186,6 +207,9 @@ class MultiqcModule(BaseMultiqcModule):
         self.hic_pairstat_data = self.ignore_samples(self.hic_pairstat_data)
         self.hic_rsstat_data = self.ignore_samples(self.hic_rsstat_data)
         self.hic_dedup_stats_data = self.ignore_samples(self.hic_dedup_stats_data)
+        self.hic_dist_contact_data = self.ignore_samples(self.hic_dist_contact_data)
+        self.hic_loop_counts_data = self.ignore_samples(self.hic_loop_counts_data)
+        self.hic_library_complexity_data = self.ignore_samples(self.hic_library_complexity_data)
         
         # If no data found at all, raise ModuleNoSamplesFound
         if (len(self.rnaseqc_data) == 0 and len(self.genetype_data) == 0 and 
@@ -197,7 +221,8 @@ class MultiqcModule(BaseMultiqcModule):
             len(self.atacseq_data) == 0 and len(self.atacseq_tss_data) == 0 and
             len(self.replicate_correlations_data) == 0 and len(self.hic_mapstat_data) == 0 and
             len(self.hic_pairstat_data) == 0 and len(self.hic_rsstat_data) == 0 and
-            len(self.hic_dedup_stats_data) == 0):
+            len(self.hic_dedup_stats_data) == 0 and len(self.hic_dist_contact_data) == 0 and
+            len(self.hic_loop_counts_data) == 0 and len(self.hic_library_complexity_data) == 0):
             raise ModuleNoSamplesFound
 
         # -----------------------------------------------------------
@@ -1158,6 +1183,252 @@ class MultiqcModule(BaseMultiqcModule):
         except Exception as e:
             log.warning(f"Error parsing Hi-C dedup stats file {f.get('fn', 'unknown')}: {e}")
 
+    def parse_hic_dist_contact_csv(self, f):
+        """ Parses the Hi-C distance vs contact statistics CSV file (loglog_fits.csv)
+        
+        Expected format:
+        region,slope,mse,n_points
+        ALL_REGIONS,,,0
+        
+        Extracts slope and mse from the ALL_REGIONS row.
+        If values are empty, stores as "N/A".
+        """
+        try:
+            parsed_data = {}
+            
+            # Parse CSV file
+            lines = f['f'].splitlines()
+            if len(lines) < 2:
+                log.warning(f"Hi-C distance vs contact file {f.get('fn', 'unknown')} has insufficient lines")
+                return
+            
+            # Parse header
+            header = [col.strip() for col in lines[0].split(',')]
+            if 'slope' not in header or 'mse' not in header:
+                log.warning(f"Hi-C distance vs contact file {f.get('fn', 'unknown')} missing 'slope' or 'mse' column")
+                return
+            
+            slope_idx = header.index('slope')
+            mse_idx = header.index('mse')
+            region_idx = header.index('region') if 'region' in header else None
+            
+            # Find ALL_REGIONS row (or first data row if no region column)
+            found_row = False
+            for line_idx, line in enumerate(lines[1:], start=1):
+                if not line.strip():
+                    continue
+                
+                data_row = [val.strip() for val in line.split(',')]
+                if len(data_row) <= max(slope_idx, mse_idx):
+                    continue
+                
+                # Check if this is the ALL_REGIONS row (if region column exists)
+                if region_idx is not None:
+                    if region_idx >= len(data_row) or data_row[region_idx].upper() != 'ALL_REGIONS':
+                        continue
+                
+                # Extract slope
+                slope_val = data_row[slope_idx] if slope_idx < len(data_row) else ''
+                if slope_val and slope_val.strip():
+                    try:
+                        parsed_data['slope'] = float(slope_val)
+                    except ValueError:
+                        parsed_data['slope'] = "N/A"
+                else:
+                    parsed_data['slope'] = "N/A"
+                
+                # Extract mse
+                mse_val = data_row[mse_idx] if mse_idx < len(data_row) else ''
+                if mse_val and mse_val.strip():
+                    try:
+                        parsed_data['mse'] = float(mse_val)
+                    except ValueError:
+                        parsed_data['mse'] = "N/A"
+                else:
+                    parsed_data['mse'] = "N/A"
+                
+                # Found the row
+                found_row = True
+                break
+            
+            if not found_row:
+                log.warning(f"Hi-C distance vs contact file {f.get('fn', 'unknown')}: Could not find ALL_REGIONS row")
+                return
+            
+            if parsed_data:
+                self.hic_dist_contact_data[f['s_name']] = parsed_data
+                log.debug(f"Parsed Hi-C distance vs contact for '{f['s_name']}': {parsed_data}")
+            else:
+                log.warning(f"Hi-C distance vs contact file {f.get('fn', 'unknown')} has no valid data")
+                
+        except Exception as e:
+            log.warning(f"Error parsing Hi-C distance vs contact file {f.get('fn', 'unknown')}: {e}")
+
+    def parse_hic_loop_counts_tsv(self, f):
+        """ Parses the Hi-C loop counts TSV file (loop_counts.tsv)
+        
+        Expected format:
+        resolution      loop_count
+        2000    0
+        5000    0
+        ...
+        total   0
+        
+        Extracts the loop_count value from the row where resolution is "total".
+        """
+        try:
+            parsed_data = {}
+            
+            # Parse TSV file
+            lines = f['f'].splitlines()
+            if len(lines) < 2:
+                log.warning(f"Hi-C loop counts file {f.get('fn', 'unknown')} has insufficient lines")
+                return
+            
+            # Parse header
+            header = lines[0].strip().split('\t')
+            if len(header) < 2:
+                # Try splitting by multiple spaces
+                header = lines[0].strip().split()
+            
+            if 'resolution' not in header or 'loop_count' not in header:
+                log.warning(f"Hi-C loop counts file {f.get('fn', 'unknown')} missing 'resolution' or 'loop_count' column")
+                return
+            
+            resolution_idx = header.index('resolution')
+            loop_count_idx = header.index('loop_count')
+            
+            # Find the row where resolution is "total"
+            found_total = False
+            for line_idx, line in enumerate(lines[1:], start=1):
+                if not line.strip():
+                    continue
+                
+                # Split by tab first, then by whitespace if needed
+                data_row = line.strip().split('\t')
+                if len(data_row) < 2:
+                    data_row = line.strip().split()
+                
+                if len(data_row) <= max(resolution_idx, loop_count_idx):
+                    continue
+                
+                # Check if this is the "total" row
+                resolution_val = data_row[resolution_idx].strip() if resolution_idx < len(data_row) else ''
+                if resolution_val.lower() == 'total':
+                    # Extract loop_count
+                    loop_count_val = data_row[loop_count_idx].strip() if loop_count_idx < len(data_row) else ''
+                    if loop_count_val:
+                        try:
+                            parsed_data['total_loops'] = int(loop_count_val)
+                            found_total = True
+                            log.debug(f"Found total loop count for '{f['s_name']}': {parsed_data['total_loops']}")
+                        except ValueError:
+                            log.warning(f"Hi-C loop counts file {f.get('fn', 'unknown')}: Invalid loop_count value '{loop_count_val}'")
+                    break
+            
+            if not found_total:
+                log.warning(f"Hi-C loop counts file {f.get('fn', 'unknown')}: Could not find 'total' row")
+                return
+            
+            if parsed_data:
+                self.hic_loop_counts_data[f['s_name']] = parsed_data
+                log.debug(f"Parsed Hi-C loop counts for '{f['s_name']}': {parsed_data}")
+            else:
+                log.warning(f"Hi-C loop counts file {f.get('fn', 'unknown')} has no valid data")
+                
+        except Exception as e:
+            log.warning(f"Error parsing Hi-C loop counts file {f.get('fn', 'unknown')}: {e}")
+
+    def parse_hic_library_complexity_tsv(self, f):
+        """ Parses the Hi-C library complexity TSV file
+        
+        Expected format:
+        library N_total C       N_optical_rate  N_optical       N_pcr   U_observed
+        test1-1 13801   59877.98        0.106876        1475    12326   11140.09
+        
+        Extracts the C column value (library complexity) for each library.
+        """
+        try:
+            parsed_data = {}
+            
+            # Parse TSV file
+            lines = f['f'].splitlines()
+            if len(lines) < 2:
+                log.warning(f"Hi-C library complexity file {f.get('fn', 'unknown')} has insufficient lines")
+                return
+            
+            # Parse header
+            header = lines[0].strip().split('\t')
+            if len(header) < 2:
+                # Try splitting by multiple spaces
+                header = lines[0].strip().split()
+            
+            if 'library' not in header or 'C' not in header:
+                log.warning(f"Hi-C library complexity file {f.get('fn', 'unknown')} missing 'library' or 'C' column")
+                return
+            
+            library_idx = header.index('library')
+            c_idx = header.index('C')
+            
+            # Parse data rows - try to match library name with sample name
+            sample_name = f['s_name']
+            found_match = False
+            
+            for line_idx, line in enumerate(lines[1:], start=1):
+                if not line.strip():
+                    continue
+                
+                # Split by tab first, then by whitespace if needed
+                data_row = line.strip().split('\t')
+                if len(data_row) < 2:
+                    data_row = line.strip().split()
+                
+                if len(data_row) <= max(library_idx, c_idx):
+                    continue
+                
+                # Extract library name and C value
+                library_name = data_row[library_idx].strip() if library_idx < len(data_row) else ''
+                c_val = data_row[c_idx].strip() if c_idx < len(data_row) else ''
+                
+                if library_name and c_val:
+                    # Try to match library name with sample name (handle variations)
+                    # Check if library name matches sample name (exact or partial match)
+                    if library_name == sample_name or sample_name.endswith(library_name) or library_name in sample_name:
+                        try:
+                            complexity_value = float(c_val)
+                            parsed_data['library_complexity'] = complexity_value
+                            found_match = True
+                            log.debug(f"Found library complexity for '{sample_name}' (matched library '{library_name}'): {complexity_value}")
+                            break
+                        except ValueError:
+                            log.warning(f"Hi-C library complexity file {f.get('fn', 'unknown')}: Invalid C value '{c_val}'")
+            
+            # If no match found, use the first row (in case file is already split by sample)
+            if not found_match and len(lines) > 1:
+                first_data_line = lines[1].strip()
+                if first_data_line:
+                    data_row = first_data_line.split('\t')
+                    if len(data_row) < 2:
+                        data_row = first_data_line.split()
+                    if len(data_row) > c_idx:
+                        c_val = data_row[c_idx].strip() if c_idx < len(data_row) else ''
+                        if c_val:
+                            try:
+                                complexity_value = float(c_val)
+                                parsed_data['library_complexity'] = complexity_value
+                                log.debug(f"Using first row library complexity for '{sample_name}': {complexity_value}")
+                            except ValueError:
+                                pass
+            
+            if parsed_data:
+                self.hic_library_complexity_data[f['s_name']] = parsed_data
+                log.debug(f"Parsed Hi-C library complexity for '{f['s_name']}': {parsed_data}")
+            else:
+                log.warning(f"Hi-C library complexity file {f.get('fn', 'unknown')} has no valid data")
+                
+        except Exception as e:
+            log.warning(f"Error parsing Hi-C library complexity file {f.get('fn', 'unknown')}: {e}")
+
     # ===============================================================
     # REPORT WRITING
     # ===============================================================
@@ -1514,6 +1785,42 @@ class MultiqcModule(BaseMultiqcModule):
             'format': '{:.4f}',
             'scale': 'RdYlGn'
         }
+        
+        # 18. Define Headers for Hi-C Distance vs Contact Stats
+        hic_dist_contact_headers = OrderedDict()
+        hic_dist_contact_headers['slope'] = {
+            'title': 'Hi-C Slope',
+            'description': 'Hi-C: Distance vs contact slope (log-log fit)',
+            'format': '{:.4f}',
+            'scale': 'RdYlGn'
+        }
+        hic_dist_contact_headers['mse'] = {
+            'title': 'Hi-C MSE',
+            'description': 'Hi-C: Mean squared error of distance vs contact fit',
+            'format': '{:.4f}',
+            'scale': 'OrRd',
+            'min': 0
+        }
+        
+        # 19. Define Headers for Hi-C Loop Counts Stats
+        hic_loop_counts_headers = OrderedDict()
+        hic_loop_counts_headers['total_loops'] = {
+            'title': 'Hi-C Total Loops',
+            'description': 'Hi-C: Total number of loops detected across all resolutions',
+            'format': '{:,.0f}',
+            'scale': 'Blues',
+            'min': 0
+        }
+        
+        # 20. Define Headers for Hi-C Library Complexity Stats
+        hic_library_complexity_headers = OrderedDict()
+        hic_library_complexity_headers['library_complexity'] = {
+            'title': 'Hi-C Library Complexity',
+            'description': 'Hi-C: Library complexity (C)',
+            'format': '{:,.2f}',
+            'scale': 'RdYlGn',
+            'min': 0
+        }
 
         # Calculate cross-file metrics before adding to general stats
         # Match data across files by sample name
@@ -1611,6 +1918,9 @@ class MultiqcModule(BaseMultiqcModule):
         self.general_stats_addcols(self.hic_pairstat_data, hic_pairstat_headers)
         self.general_stats_addcols(self.hic_rsstat_data, hic_rsstat_headers)
         self.general_stats_addcols(self.hic_dedup_stats_data, hic_dedup_headers)
+        self.general_stats_addcols(self.hic_dist_contact_data, hic_dist_contact_headers)
+        self.general_stats_addcols(self.hic_loop_counts_data, hic_loop_counts_headers)
+        self.general_stats_addcols(self.hic_library_complexity_data, hic_library_complexity_headers)
 
     def write_gene_type_plot(self):
         """ Creates a Stacked Bar Plot for Gene Types """
