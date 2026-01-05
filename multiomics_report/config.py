@@ -66,7 +66,8 @@ def before_config():
         ".prealign.stats.tsv",".stats.tsv",
         ".tss_histogram.csv", ".replicate_correlations.tsv",
         ".mapstat", ".pairstat", "hicpro.RSstat", 
-        '.dedup.stats', '_loglog_fits.csv', '.loop_counts.tsv', 'complexity',
+        '.dedup.stats', '_loglog_fits.csv', 
+        '.loop_counts.tsv', 'complexity',
         {'type': 'remove', 'pattern': 'sambamba_markdup_'},  # Remove prefix
         {'type': 'remove', 'pattern': 'bowtie2_'},            # Remove prefix
         {'type': 'remove', 'pattern': '.err'},                 # Remove suffix

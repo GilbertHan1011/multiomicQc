@@ -35,7 +35,7 @@ class MultiqcModule(BaseMultiqcModule):
         self.prealign_data = dict()  # Stores prealign stats data (percent_filtered)
         self.atacseq_data = dict()  # Stores ATAC-seq/Samblaster data (n_tot, n_nondups, nrf)
         self.atacseq_tss_data = dict()  # Stores TSS coverage data (downsampled for plotting)
-        self.replicate_correlations_data = dict()  # Stores replicate correlation data (pearson_p)
+        self.replicate_correlations_data = dict()  # Stores replicate correlation data (pearson_r)
         self.reproducibility_qc_data = dict()  # Stores reproducibility QC data (rescue_ratio, self_consistency_ratio, N_optimal)
         self.hic_mapstat_data = dict()  # Stores Hi-C BAM mapping statistics (mapped_rate, etc.)
         self.hic_pairstat_data = dict()  # Stores Hi-C pair alignment statistics
@@ -835,7 +835,7 @@ class MultiqcModule(BaseMultiqcModule):
         rep1    rep2    pearson_r       pearson_p       spearman_r      spearman_p
         test1-1 test1-2 0.9999999999999996      0.0     1.0     0.0
         
-        Extracts pearson_p and stores it with the parent sample name (e.g., test1)
+        Extracts pearson_r and stores it with the parent sample name (e.g., test1)
         """
         try:
             lines = f['f'].splitlines()
@@ -845,11 +845,11 @@ class MultiqcModule(BaseMultiqcModule):
             
             # Parse header
             header = [col.strip() for col in lines[0].split('\t')]
-            if 'pearson_p' not in header:
-                log.warning(f"Replicate correlations file {f.get('fn', 'unknown')} missing 'pearson_p' column")
+            if 'pearson_r' not in header:
+                log.warning(f"Replicate correlations file {f.get('fn', 'unknown')} missing 'pearson_r' column")
                 return
             
-            pearson_p_idx = header.index('pearson_p')
+            pearson_r_idx = header.index('pearson_r')
             rep1_idx = header.index('rep1')
             
             # Parse data rows
@@ -858,12 +858,12 @@ class MultiqcModule(BaseMultiqcModule):
                     continue
                     
                 data_row = [val.strip() for val in line.split('\t')]
-                if len(data_row) <= max(pearson_p_idx, rep1_idx):
+                if len(data_row) <= max(pearson_r_idx, rep1_idx):
                     continue
                 
                 try:
                     rep1 = data_row[rep1_idx]
-                    pearson_p = float(data_row[pearson_p_idx])
+                    pearson_r = float(data_row[pearson_r_idx])
                     
                     # Extract parent sample name (e.g., test1-1 -> test1)
                     # Split on hyphen and take the first part
@@ -873,8 +873,8 @@ class MultiqcModule(BaseMultiqcModule):
                     if parent_name not in self.replicate_correlations_data:
                         self.replicate_correlations_data[parent_name] = {}
                     
-                    self.replicate_correlations_data[parent_name]['pearson_p'] = pearson_p
-                    log.debug(f"Parsed replicate correlations for parent '{parent_name}': pearson_p={pearson_p}")
+                    self.replicate_correlations_data[parent_name]['pearson_r'] = pearson_r
+                    log.debug(f"Parsed replicate correlations for parent '{parent_name}': pearson_r={pearson_r}")
                     
                 except (ValueError, IndexError) as e:
                     log.warning(f"Replicate correlations file {f.get('fn', 'unknown')}: Could not parse row {line_idx}: {e}")
@@ -1595,9 +1595,9 @@ class MultiqcModule(BaseMultiqcModule):
         
         # 11. Define Headers for Replicate Correlations
         replicate_corr_headers = OrderedDict()
-        replicate_corr_headers['pearson_p'] = {
+        replicate_corr_headers['pearson_r'] = {
             'title': 'Peak Correlation',
-            'description': 'Peak correlation p-value',
+            'description': 'Peak correlation r-value',
             'min': 0,
             'max': 1,
             'format': '{:.4f}',

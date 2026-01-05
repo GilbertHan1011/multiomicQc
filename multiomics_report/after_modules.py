@@ -154,10 +154,10 @@ def _extract_reproducibility_headers() -> OrderedDict:
         }
     
     # Add pearson_p header if missing
-    if ColumnKey('pearson_p') not in mad_headers:
-        mad_headers[ColumnKey('pearson_p')] = {
+    if ColumnKey('pearson_r') not in mad_headers:
+        mad_headers[ColumnKey('pearson_r')] = {
             'title': 'Peak Correlation',
-            'description': 'Peak correlation p-value',
+            'description': 'Peak correlation r-value',
             'min': 0,
             'max': 1,
             'format': '{:.4f}',
