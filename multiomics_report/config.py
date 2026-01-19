@@ -60,7 +60,7 @@ def before_config():
     extra_exts = [
         '_Log.final.out', '.summary_metrics.json', '.metrics.tsv', 
         '.metrics', '.isoforms', 
-        '.genes', '_fastp', '_gene_type_count',
+        '.genes', '_fastp', '_gene_type_count', '_hic_tailor',
         "_coverage.tsv", "_peakcount.txt",
         "_jaccard.txt", "_bam_correlation_stats_mqc.tsv",
         ".prealign.stats.tsv",".stats.tsv",
@@ -76,6 +76,8 @@ def before_config():
         {'type': 'remove', 'pattern': r'\.mapq.*'},  # Remove .mapq and anything after it (e.g., .mapq_30.1000)
         {'type': 'remove', 'pattern': '_gene_type_count.json'},  # Remove suffix with .json
         {'type': 'remove', 'pattern': '_gene_type_count'},  # Remove suffix without .json (in case .json was already stripped)
+        {'type': 'remove', 'pattern': '_hic_tailor.json'},  # Remove suffix with .json
+        {'type': 'remove', 'pattern': '_hic_tailor'},  # Remove suffix without .json
     ]
     # Prepend to ensure higher priority
     config.fn_clean_exts[0:0] = extra_exts

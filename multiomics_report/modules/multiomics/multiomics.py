@@ -44,6 +44,7 @@ class MultiqcModule(BaseMultiqcModule):
         self.hic_dist_contact_data = dict()  # Stores Hi-C distance vs contact statistics (slope, mse)
         self.hic_loop_counts_data = dict()  # Stores Hi-C loop counts statistics (total loop count)
         self.hic_library_complexity_data = dict()  # Stores Hi-C library complexity statistics (C)
+        self.hic_tailor_data = dict()  # Stores Hi-C Tailor stats (total_pairs_read, discard_rate, align_percentage, vi_rate)
         # -----------------------------------------------------------
         # 3. PARSING LOGIC
         # -----------------------------------------------------------
@@ -184,6 +185,12 @@ class MultiqcModule(BaseMultiqcModule):
         log.debug(f"[DEBUG] Found {len(hic_complexity_files)} Hi-C library complexity files")
         for f in hic_complexity_files:
             self.parse_hic_library_complexity_tsv(f)
+        
+        # X. Parse Hi-C Tailor stats files (*_hic_tailor.json)
+        hic_tailor_files = list(self.find_log_files('multiomics_report/hic_tailor'))
+        log.debug(f"[DEBUG] Found {len(hic_tailor_files)} Hi-C Tailor files")
+        for f in hic_tailor_files:
+            self.parse_hic_tailor_json(f)
         # -----------------------------------------------------------
         # 4. FILTERING & EXIT
         # -----------------------------------------------------------
@@ -211,6 +218,7 @@ class MultiqcModule(BaseMultiqcModule):
         self.hic_dist_contact_data = self.ignore_samples(self.hic_dist_contact_data)
         self.hic_loop_counts_data = self.ignore_samples(self.hic_loop_counts_data)
         self.hic_library_complexity_data = self.ignore_samples(self.hic_library_complexity_data)
+        self.hic_tailor_data = self.ignore_samples(self.hic_tailor_data)
         
         # If no data found at all, raise ModuleNoSamplesFound
         if (len(self.rnaseqc_data) == 0 and len(self.genetype_data) == 0 and 
@@ -223,7 +231,8 @@ class MultiqcModule(BaseMultiqcModule):
             len(self.replicate_correlations_data) == 0 and len(self.hic_mapstat_data) == 0 and
             len(self.hic_pairstat_data) == 0 and len(self.hic_rsstat_data) == 0 and
             len(self.hic_dedup_stats_data) == 0 and len(self.hic_dist_contact_data) == 0 and
-            len(self.hic_loop_counts_data) == 0 and len(self.hic_library_complexity_data) == 0):
+            len(self.hic_loop_counts_data) == 0 and len(self.hic_library_complexity_data) == 0 and
+            len(self.hic_tailor_data) == 0):
             raise ModuleNoSamplesFound
 
         # -----------------------------------------------------------
@@ -1434,6 +1443,49 @@ class MultiqcModule(BaseMultiqcModule):
         except Exception as e:
             log.warning(f"Error parsing Hi-C library complexity file {f.get('fn', 'unknown')}: {e}")
 
+    def parse_hic_tailor_json(self, f):
+        """Parses Hi-C Tailor stats JSON (filename pattern: {{sample}}_hic_tailor.json).
+        
+        Extracts:
+        - total_pairs_read (top-level)
+        - rates.discard_rate
+        - rates.align_percentage
+        - rates.vi_rate
+        """
+        try:
+            data = json.loads(f['f'])
+            s_name = f.get('s_name', '')
+            # Clean sample name if suffixes remain
+            if s_name.endswith('_hic_tailor.json'):
+                s_name = s_name[:-len('_hic_tailor.json')]
+            elif s_name.endswith('_hic_tailor'):
+                s_name = s_name[:-len('_hic_tailor')]
+            
+            parsed = {}
+            if 'total_pairs_read' in data:
+                try:
+                    parsed['total_pairs_read'] = int(data['total_pairs_read'])
+                except (ValueError, TypeError):
+                    pass
+            
+            rates = data.get('rates', {})
+            for key in ['discard_rate', 'align_percentage', 'vi_rate']:
+                if key in rates:
+                    try:
+                        parsed[key] = float(rates[key])
+                    except (ValueError, TypeError):
+                        pass
+            
+            if parsed:
+                self.hic_tailor_data[s_name] = parsed
+                log.debug(f"Parsed Hi-C Tailor for '{s_name}': {parsed}")
+            else:
+                log.warning(f"Hi-C Tailor file {f.get('fn', 'unknown')} had no usable data")
+        except json.JSONDecodeError as e:
+            log.warning(f"Failed to parse Hi-C Tailor JSON file {f.get('fn', 'unknown')}: {e}")
+        except Exception as e:
+            log.warning(f"Error parsing Hi-C Tailor file {f.get('fn', 'unknown')}: {e}")
+
     # ===============================================================
     # REPORT WRITING
     # ===============================================================
@@ -1767,6 +1819,13 @@ class MultiqcModule(BaseMultiqcModule):
             'format': '{:.4f}',
             'scale': 'OrRd'
         }
+        hic_dedup_headers['total_nodups'] = {
+            'title': 'Hi-C Unique VI',
+            'description': 'Hi-C: total_nodups (unique valid interactions)',
+            'format': '{:,.0f}',
+            'scale': 'Blues',
+            'min': 0
+        }
         hic_dedup_headers['frac_cis2k'] = {
             'title': 'Hi-C Frac Cis 2kb',
             'description': 'Hi-C: Fraction of cis interactions within 2kb (cis_2kb/Total_pairs_processed)',
@@ -1825,6 +1884,39 @@ class MultiqcModule(BaseMultiqcModule):
             'format': '{:,.2f}',
             'scale': 'RdYlGn',
             'min': 0
+        }
+
+        # 21. Define Headers for Hi-C Tailor Stats
+        hic_tailor_headers = OrderedDict()
+        hic_tailor_headers['total_pairs_read'] = {
+            'title': 'Hi-C Tailor Total Pairs',
+            'description': 'Hi-C Tailor: total pairs read',
+            'format': '{:,.0f}',
+            'scale': 'Blues'
+        }
+        hic_tailor_headers['discard_rate'] = {
+            'title': 'Hi-C Tailor Discard',
+            'description': 'Hi-C Tailor: discard_rate',
+            'min': 0,
+            'max': 1,
+            'format': '{:.4f}',
+            'scale': 'OrRd'
+        }
+        hic_tailor_headers['align_percentage'] = {
+            'title': 'Hi-C Tailor Align',
+            'description': 'Hi-C Tailor: align_percentage',
+            'min': 0,
+            'max': 1,
+            'format': '{:.4f}',
+            'scale': 'RdYlGn'
+        }
+        hic_tailor_headers['vi_rate'] = {
+            'title': 'Hi-C Tailor VI Rate',
+            'description': 'Hi-C Tailor: vi_rate',
+            'min': 0,
+            'max': 1,
+            'format': '{:.4f}',
+            'scale': 'RdYlGn'
         }
 
         # Calculate cross-file metrics before adding to general stats
@@ -1926,6 +2018,7 @@ class MultiqcModule(BaseMultiqcModule):
         self.general_stats_addcols(self.hic_dist_contact_data, hic_dist_contact_headers)
         self.general_stats_addcols(self.hic_loop_counts_data, hic_loop_counts_headers)
         self.general_stats_addcols(self.hic_library_complexity_data, hic_library_complexity_headers)
+        self.general_stats_addcols(self.hic_tailor_data, hic_tailor_headers)
 
     def write_gene_type_plot(self):
         """ Creates a Stacked Bar Plot for Gene Types """
