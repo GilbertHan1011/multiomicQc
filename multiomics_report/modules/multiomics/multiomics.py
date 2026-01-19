@@ -1811,6 +1811,13 @@ class MultiqcModule(BaseMultiqcModule):
         
         # 17. Define Headers for Hi-C Deduplication Stats
         hic_dedup_headers = OrderedDict()
+        hic_dedup_headers['total_nodups'] = {
+            'title': 'Unique Valid Pair',
+            'description': 'Hi-C: Number of unique valid pairs (total_nodups)',
+            'format': '{:,.0f}',
+            'scale': 'Greens',
+            'min': 0
+        }
         hic_dedup_headers['frac_dups'] = {
             'title': 'Hi-C Frac Dups',
             'description': 'Hi-C: Fraction of duplicates (from summary/frac_dups)',
@@ -1818,13 +1825,6 @@ class MultiqcModule(BaseMultiqcModule):
             'max': 1,
             'format': '{:.4f}',
             'scale': 'OrRd'
-        }
-        hic_dedup_headers['total_nodups'] = {
-            'title': 'Hi-C Unique VI',
-            'description': 'Hi-C: total_nodups (unique valid interactions)',
-            'format': '{:,.0f}',
-            'scale': 'Blues',
-            'min': 0
         }
         hic_dedup_headers['frac_cis2k'] = {
             'title': 'Hi-C Frac Cis 2kb',

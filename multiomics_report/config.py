@@ -73,7 +73,7 @@ def before_config():
         {'type': 'remove', 'pattern': '.err'},                 # Remove suffix
         {'type': 'remove', 'pattern': 'frip_'}, 
         {'type': 'remove', 'pattern': 'lcextrap_'},
-        {'type': 'remove', 'pattern': r'\.mapq.*'},  # Remove .mapq and anything after it (e.g., .mapq_30.1000)
+        {'type': 'remove', 'pattern': r'\.mapq.*'},  # Remove .mapq and anything after it (e.g., .mapq_30.1000) 
         {'type': 'remove', 'pattern': '_gene_type_count.json'},  # Remove suffix with .json
         {'type': 'remove', 'pattern': '_gene_type_count'},  # Remove suffix without .json (in case .json was already stripped)
         {'type': 'remove', 'pattern': '_hic_tailor.json'},  # Remove suffix with .json
