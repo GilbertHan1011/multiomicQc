@@ -1144,17 +1144,20 @@ class MultiqcModule(BaseMultiqcModule):
                 parts = line.split()
                 if len(parts) >= 2:
                     key = parts[0].strip()
+                    val_str = parts[1].strip()
                     try:
-                        value = int(float(parts[1].strip()))
-                        parsed_data[key] = value
-                    except ValueError:
-                        # Try as float for frac_dups
-                        try:
-                            value = float(parts[1].strip())
+                        # Check if value contains decimal point or is a fraction field
+                        if '.' in val_str or 'summary/frac' in key or 'frac_' in key:
+                            # Parse as float
+                            value = float(val_str)
                             parsed_data[key] = value
-                        except ValueError:
-                            # Skip non-numeric values
-                            continue
+                        else:
+                            # Parse as integer
+                            value = int(float(val_str))
+                            parsed_data[key] = value
+                    except ValueError:
+                        # Skip non-numeric values
+                        continue
             
             # Handle cis_2kb+ or cis_2kb field name variations
             cis_2kb_value = None
@@ -1166,9 +1169,23 @@ class MultiqcModule(BaseMultiqcModule):
                         parsed_data['cis_2kb'] = cis_2kb_value
                     break
             
+            # Handle cis_20kb+ field name variations
+            cis_20kb_value = None
+            for key in ['cis_20kb+', 'cis_20kb', 'cis_20kb_plus']:
+                if key in parsed_data:
+                    cis_20kb_value = parsed_data[key]
+                    # Normalize to cis_20kb for easier access
+                    if key != 'cis_20kb':
+                        parsed_data['cis_20kb'] = cis_20kb_value
+                    break
+            
             # Normalize summary/frac_dups to frac_dups
             if 'summary/frac_dups' in parsed_data:
                 parsed_data['frac_dups'] = parsed_data['summary/frac_dups']
+            
+            # Normalize summary/frac_cis_2kb+ to frac_cis_20kb (for cis-20k rate display)
+            if 'summary/frac_cis_20kb+' in parsed_data:
+                parsed_data['frac_cis_20kb'] = parsed_data['summary/frac_cis_20kb+']
             
             # Calculate frac_trans = trans / total
             if 'trans' in parsed_data and 'total' in parsed_data:
@@ -1880,6 +1897,21 @@ class MultiqcModule(BaseMultiqcModule):
             'min': 0,
             'format': '{:.4f}',
             'scale': 'RdYlGn'
+        }
+        hic_dedup_headers['cis_20kb'] = {
+            'title': 'Cis-20k',
+            'description': 'Hi-C: Number of cis interactions within 20kb (cis_20kb+)',
+            'format': '{:,.0f}',
+            'scale': 'Blues',
+            'min': 0
+        }
+        hic_dedup_headers['frac_cis_20kb'] = {
+            'title': 'Cis-20k Rate',
+            'description': 'Hi-C: Fraction of cis interactions within 20kb (summary/frac_cis_2kb+)',
+            'min': 0,
+            'max': 1,
+            'format': '{:.4f}',
+            'scale': 'Blues'
         }
         
         # 18. Define Headers for Hi-C Distance vs Contact Stats
