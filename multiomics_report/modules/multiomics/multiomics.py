@@ -4,7 +4,7 @@ import re
 from collections import OrderedDict
 from multiqc.base_module import BaseMultiqcModule, ModuleNoSamplesFound
 from multiqc import config
-from multiqc.plots import bargraph
+from multiqc.plots import bargraph, table, violin
 
 log = logging.getLogger(__name__)
 
@@ -243,6 +243,8 @@ class MultiqcModule(BaseMultiqcModule):
         
         self.write_general_stats()
         self.write_gene_type_plot()
+        self.write_hic_tailor_table()
+        self.write_hic_tailor_violin_plots()
         
         # Write data file (MUST be at the end, after all sections are added)
         # Combine all data into one dict for writing
@@ -1446,11 +1448,7 @@ class MultiqcModule(BaseMultiqcModule):
     def parse_hic_tailor_json(self, f):
         """Parses Hi-C Tailor stats JSON (filename pattern: {{sample}}_hic_tailor.json).
         
-        Extracts:
-        - total_pairs_read (top-level)
-        - rates.discard_rate
-        - rates.align_percentage
-        - rates.vi_rate
+        Extracts all fields needed for general stats and detailed table.
         """
         try:
             data = json.loads(f['f'])
@@ -1462,23 +1460,57 @@ class MultiqcModule(BaseMultiqcModule):
                 s_name = s_name[:-len('_hic_tailor')]
             
             parsed = {}
-            if 'total_pairs_read' in data:
-                try:
-                    parsed['total_pairs_read'] = int(data['total_pairs_read'])
-                except (ValueError, TypeError):
-                    pass
             
-            rates = data.get('rates', {})
-            for key in ['discard_rate', 'align_percentage', 'vi_rate']:
-                if key in rates:
+            # Store all top-level fields
+            for key in ['total_pairs_read', 'stitched', 'stitched_cut', 'stitched_uncut', 
+                       'unstitched', 'unstitched_trimmed', 'unstitched_untrimmed', 'unstitched_discarded',
+                       'hic_valid', 'hic_dangling_end', 'hic_religation', 'hic_self_circle_frag',
+                       'hic_filtered', 'hic_dumped']:
+                if key in data:
                     try:
-                        parsed[key] = float(rates[key])
+                        parsed[key] = int(data[key])
                     except (ValueError, TypeError):
                         pass
             
+            # Store all rates
+            rates = data.get('rates', {})
+            for key in rates:
+                try:
+                    parsed[key] = float(rates[key])
+                except (ValueError, TypeError):
+                    pass
+            
+            # Calculate additional rates
+            if 'stitched' in parsed and parsed['stitched'] > 0 and 'stitched_cut' in parsed:
+                parsed['stitched_cut_rate'] = float(parsed['stitched_cut']) / float(parsed['stitched'])
+            
+            if 'total_pairs_read' in parsed and parsed['total_pairs_read'] > 0:
+                if 'unstitched' in parsed:
+                    parsed['unstitched_rate'] = float(parsed['unstitched']) / float(parsed['total_pairs_read'])
+                
+                # Calculate unstitched rates
+                unstitched_total = 0
+                if 'unstitched_trimmed' in parsed:
+                    unstitched_total += parsed['unstitched_trimmed']
+                if 'unstitched_untrimmed' in parsed:
+                    unstitched_total += parsed['unstitched_untrimmed']
+                if 'unstitched_discarded' in parsed:
+                    unstitched_total += parsed['unstitched_discarded']
+                
+                if unstitched_total > 0:
+                    if 'unstitched_trimmed' in parsed:
+                        parsed['unstitched_trimmed_rate'] = float(parsed['unstitched_trimmed']) / float(unstitched_total)
+                    if 'unstitched_discarded' in parsed:
+                        parsed['unstitched_discarded_rate'] = float(parsed['unstitched_discarded']) / float(unstitched_total)
+                
+                # Calculate Hi-C filter rates (relative to total_pairs_read)
+                for hic_key in ['hic_dangling_end', 'hic_religation', 'hic_self_circle_frag', 'hic_filtered', 'hic_dumped']:
+                    if hic_key in parsed:
+                        parsed[f'{hic_key}_rate'] = float(parsed[hic_key]) / float(parsed['total_pairs_read'])
+            
             if parsed:
                 self.hic_tailor_data[s_name] = parsed
-                log.debug(f"Parsed Hi-C Tailor for '{s_name}': {parsed}")
+                log.debug(f"Parsed Hi-C Tailor for '{s_name}': {len(parsed)} fields")
             else:
                 log.warning(f"Hi-C Tailor file {f.get('fn', 'unknown')} had no usable data")
         except json.JSONDecodeError as e:
@@ -1894,9 +1926,9 @@ class MultiqcModule(BaseMultiqcModule):
             'format': '{:,.0f}',
             'scale': 'Blues'
         }
-        hic_tailor_headers['discard_rate'] = {
+        hic_tailor_headers['total_discard_rate'] = {
             'title': 'Hi-C Tailor Discard',
-            'description': 'Hi-C Tailor: discard_rate',
+            'description': 'Hi-C Tailor: total_discard_rate',
             'min': 0,
             'max': 1,
             'format': '{:.4f}',
@@ -2048,4 +2080,197 @@ class MultiqcModule(BaseMultiqcModule):
             anchor='my_rnaseq_genetypes',
             description='Counts of different gene biotypes (protein_coding, rRNA, etc.)',
             plot=plot
+        )
+
+    def write_hic_tailor_table(self):
+        """ Creates a table for Hi-C Tailor statistics """
+        if not self.hic_tailor_data:
+            return
+        
+        # Prepare table data
+        table_data = {}
+        for sample_name, data in self.hic_tailor_data.items():
+            table_data[sample_name] = {}
+            
+            # Add all requested metrics
+            metrics = [
+                'stitch_rate',
+                'trim_rate',
+                'discard_rate',
+                'total_discard_rate',
+                'stitched_cut_rate',
+                'unstitched_rate',
+                'unstitched_trimmed_rate',
+                'unstitched_discarded_rate',
+                'hic_dangling_end_rate',
+                'hic_religation_rate',
+                'hic_self_circle_frag_rate',
+                'hic_filtered_rate',
+                'hic_dumped_rate'
+            ]
+            
+            for metric in metrics:
+                if metric in data:
+                    table_data[sample_name][metric] = data[metric]
+        
+        if not table_data:
+            return
+        
+        # Define headers
+        headers = OrderedDict()
+        headers['stitch_rate'] = {
+            'title': 'Stitch Rate',
+            'description': 'Hi-C Tailor: Fraction of pairs that were stitched',
+            'min': 0,
+            'max': 1,
+            'format': '{:.4f}',
+            'scale': 'RdYlGn'
+        }
+        headers['trim_rate'] = {
+            'title': 'Trim Rate',
+            'description': 'Hi-C Tailor: Trim rate',
+            'min': 0,
+            'max': 1,
+            'format': '{:.4f}',
+            'scale': 'RdYlGn'
+        }
+        headers['discard_rate'] = {
+            'title': 'Discard Rate',
+            'description': 'Hi-C Tailor: Discard rate',
+            'min': 0,
+            'max': 1,
+            'format': '{:.4f}',
+            'scale': 'OrRd'
+        }
+        headers['total_discard_rate'] = {
+            'title': 'Total Discard Rate',
+            'description': 'Hi-C Tailor: Total discard rate',
+            'min': 0,
+            'max': 1,
+            'format': '{:.4f}',
+            'scale': 'OrRd'
+        }
+        headers['stitched_cut_rate'] = {
+            'title': 'Stitched Cut Rate',
+            'description': 'Hi-C Tailor: Fraction of stitched pairs that were cut (stitched_cut/stitched)',
+            'min': 0,
+            'max': 1,
+            'format': '{:.4f}',
+            'scale': 'RdYlGn'
+        }
+        headers['unstitched_rate'] = {
+            'title': 'Unstitched Rate',
+            'description': 'Hi-C Tailor: Fraction of pairs that were unstitched (unstitched/total_pairs_read)',
+            'min': 0,
+            'max': 1,
+            'format': '{:.4f}',
+            'scale': 'OrRd'
+        }
+        headers['unstitched_trimmed_rate'] = {
+            'title': 'Unstitched Trimmed Rate',
+            'description': 'Hi-C Tailor: Fraction of unstitched pairs that were trimmed',
+            'min': 0,
+            'max': 1,
+            'format': '{:.4f}',
+            'scale': 'RdYlGn'
+        }
+        headers['unstitched_discarded_rate'] = {
+            'title': 'Unstitched Discarded Rate',
+            'description': 'Hi-C Tailor: Fraction of unstitched pairs that were discarded',
+            'min': 0,
+            'max': 1,
+            'format': '{:.4f}',
+            'scale': 'OrRd'
+        }
+        headers['hic_dangling_end_rate'] = {
+            'title': 'Hi-C Dangling End Rate',
+            'description': 'Hi-C Tailor: Rate of dangling end pairs (hic_dangling_end/total_pairs_read)',
+            'min': 0,
+            'format': '{:.6f}',
+            'scale': 'OrRd'
+        }
+        headers['hic_religation_rate'] = {
+            'title': 'Hi-C Religation Rate',
+            'description': 'Hi-C Tailor: Rate of religation pairs (hic_religation/total_pairs_read)',
+            'min': 0,
+            'format': '{:.6f}',
+            'scale': 'OrRd'
+        }
+        headers['hic_self_circle_frag_rate'] = {
+            'title': 'Hi-C Self Circle Rate',
+            'description': 'Hi-C Tailor: Rate of self-circle fragments (hic_self_circle_frag/total_pairs_read)',
+            'min': 0,
+            'format': '{:.6f}',
+            'scale': 'OrRd'
+        }
+        headers['hic_filtered_rate'] = {
+            'title': 'Hi-C Filtered Rate',
+            'description': 'Hi-C Tailor: Rate of filtered pairs (hic_filtered/total_pairs_read)',
+            'min': 0,
+            'format': '{:.6f}',
+            'scale': 'OrRd'
+        }
+        headers['hic_dumped_rate'] = {
+            'title': 'Hi-C Dumped Rate',
+            'description': 'Hi-C Tailor: Rate of dumped pairs (hic_dumped/total_pairs_read)',
+            'min': 0,
+            'format': '{:.6f}',
+            'scale': 'OrRd'
+        }
+        
+        # Create table
+        table_config = {
+            'id': 'hic_tailor_stats_table',
+            'title': 'Hi-C Tailor Statistics',
+            'col1_header': 'Sample',
+            'sort_rows': False
+        }
+        
+        table_html = table.plot(table_data, headers, table_config)
+        
+        if table_html:
+            self.add_section(
+                name='Hi-C Tailor Statistics',
+                anchor='hic_tailor_stats',
+                description='Detailed statistics from Hi-C Tailor processing',
+                plot=table_html
+            )
+
+    def write_hic_tailor_violin_plots(self):
+        """ Creates interactive violin plots for Hi-C Tailor statistics """
+        if not self.hic_tailor_data:
+            return
+        
+        # Define headers for all metrics
+        rate_config = {
+            "min": 0,
+            "max": 1,
+            "suffix": None,
+            "format": "{:.4f}",
+        }
+        
+        headers = {
+            'stitch_rate': dict(rate_config, title='Stitch Rate', description='Fraction of pairs that were stitched'),
+            'trim_rate': dict(rate_config, title='Trim Rate', description='Trim rate'),
+            'discard_rate': dict(rate_config, title='Discard Rate', description='Discard rate'),
+            'total_discard_rate': dict(rate_config, title='Total Discard Rate', description='Total discard rate'),
+            'stitched_cut_rate': dict(rate_config, title='Stitched Cut Rate', description='Fraction of stitched pairs that were cut'),
+            'unstitched_rate': dict(rate_config, title='Unstitched Rate', description='Fraction of pairs that were unstitched'),
+            'unstitched_trimmed_rate': dict(rate_config, title='Unstitched Trimmed Rate', description='Fraction of unstitched pairs that were trimmed'),
+            'unstitched_discarded_rate': dict(rate_config, title='Unstitched Discarded Rate', description='Fraction of unstitched pairs that were discarded'),
+        }
+        
+        # Create the violin plot with all metrics
+        self.add_section(
+            name='Hi-C Tailor Rates',
+            anchor='hic_tailor_violin',
+            description='Distribution of Hi-C Tailor processing rates across samples. All rates are shown as fractions (0-1).',
+            plot=violin.plot(
+                self.hic_tailor_data,
+                headers=headers,
+                pconfig={
+                    'id': 'hic_tailor_rates_violin',
+                    'title': 'Hi-C Tailor: Processing Rates',
+                },
+            ),
         )
