@@ -245,6 +245,7 @@ class MultiqcModule(BaseMultiqcModule):
         self.write_gene_type_plot()
         self.write_hic_tailor_table()
         self.write_hic_tailor_violin_plots()
+        self.write_hic_dedup_violin_plots()
         
         # Write data file (MUST be at the end, after all sections are added)
         # Combine all data into one dict for writing
@@ -1842,8 +1843,24 @@ class MultiqcModule(BaseMultiqcModule):
             'scale': 'Oranges'
         }
         hic_rsstat_headers['dangling_rate'] = {
-            'title': 'Hi-C Dangling Rate',
+            'title': 'Hi-C Dangling End Rate',
             'description': 'Hi-C: Dangling end pairs rate (Dangling_end_pairs/Total_pairs_processed)',
+            'min': 0,
+            'max': 1,
+            'format': '{:.4f}',
+            'scale': 'OrRd'
+        }
+        hic_rsstat_headers['religation_rate'] = {
+            'title': 'Hi-C Religation Rate',
+            'description': 'Hi-C: Religation pairs rate (Religation_pairs/Total_pairs_processed)',
+            'min': 0,
+            'max': 1,
+            'format': '{:.4f}',
+            'scale': 'OrRd'
+        }
+        hic_rsstat_headers['self_circle_rate'] = {
+            'title': 'Hi-C Self Circle Rate',
+            'description': 'Hi-C: Self-circle pairs rate (Self_Cycle_pairs/Total_pairs_processed)',
             'min': 0,
             'max': 1,
             'format': '{:.4f}',
@@ -1982,6 +1999,27 @@ class MultiqcModule(BaseMultiqcModule):
             'format': '{:.4f}',
             'scale': 'RdYlGn'
         }
+        hic_tailor_headers['hic_dangling_end_rate'] = {
+            'title': 'Hi-C Dangling End Rate',
+            'description': 'Hi-C Tailor: Rate of dangling end pairs (hic_dangling_end/total_pairs_read)',
+            'min': 0,
+            'format': '{:.6f}',
+            'scale': 'OrRd'
+        }
+        hic_tailor_headers['hic_religation_rate'] = {
+            'title': 'Hi-C Religation Rate',
+            'description': 'Hi-C Tailor: Rate of religation pairs (hic_religation/total_pairs_read)',
+            'min': 0,
+            'format': '{:.6f}',
+            'scale': 'OrRd'
+        }
+        hic_tailor_headers['hic_self_circle_frag_rate'] = {
+            'title': 'Hi-C Self Circle Rate',
+            'description': 'Hi-C Tailor: Rate of self-circle fragments (hic_self_circle_frag/total_pairs_read)',
+            'min': 0,
+            'format': '{:.6f}',
+            'scale': 'OrRd'
+        }
 
         # Calculate cross-file metrics before adding to general stats
         # Match data across files by sample name
@@ -2006,6 +2044,20 @@ class MultiqcModule(BaseMultiqcModule):
                     dangling_rate = float(dangling_pairs) / float(total_pairs_processed)
                     rsstat_data['dangling_rate'] = dangling_rate
                     log.debug(f"Calculated dangling_rate for '{sample_name}': {dangling_rate:.4f}")
+                
+                # Calculate religation_rate = Religation_pairs / Total_pairs_processed
+                if 'Religation_pairs' in rsstat_data:
+                    religation_pairs = rsstat_data['Religation_pairs']
+                    religation_rate = float(religation_pairs) / float(total_pairs_processed)
+                    rsstat_data['religation_rate'] = religation_rate
+                    log.debug(f"Calculated religation_rate for '{sample_name}': {religation_rate:.4f}")
+                
+                # Calculate self_circle_rate = Self_Cycle_pairs / Total_pairs_processed
+                if 'Self_Cycle_pairs' in rsstat_data:
+                    self_cycle_pairs = rsstat_data['Self_Cycle_pairs']
+                    self_circle_rate = float(self_cycle_pairs) / float(total_pairs_processed)
+                    rsstat_data['self_circle_rate'] = self_circle_rate
+                    log.debug(f"Calculated self_circle_rate for '{sample_name}': {self_circle_rate:.4f}")
                 
                 # Calculate self_ligation_rate = (Self_Cycle_pairs + Religation_pairs) / Total_pairs_processed
                 self_cycle = rsstat_data.get('Self_Cycle_pairs', 0)
@@ -2303,6 +2355,50 @@ class MultiqcModule(BaseMultiqcModule):
                 pconfig={
                     'id': 'hic_tailor_rates_violin',
                     'title': 'Hi-C Tailor: Processing Rates',
+                },
+            ),
+        )
+
+    def write_hic_dedup_violin_plots(self):
+        """ Creates interactive violin plots for Hi-C Deduplication statistics """
+        if not self.hic_dedup_stats_data:
+            return
+        
+        # Define headers for all metrics in general stats
+        rate_config = {
+            "min": 0,
+            "max": 1,
+            "suffix": None,
+            "format": "{:.4f}",
+        }
+        
+        count_config = {
+            "suffix": None,
+            "format": "{:,.0f}",
+            "shared_key": "read_count",
+        }
+        
+        headers = {
+            'total_nodups': dict(count_config, title='Unique Valid Pair', description='Number of unique valid pairs'),
+            'frac_dups': dict(rate_config, title='Hi-C Frac Dups', description='Fraction of duplicates'),
+            'frac_cis2k': dict(rate_config, title='Hi-C Frac Cis 2kb', description='Fraction of cis interactions within 2kb'),
+            'frac_trans': dict(rate_config, title='Hi-C Frac Trans', description='Fraction of trans interactions'),
+            'cis_trans_ratio': dict(rate_config, title='Hi-C Cis/Trans Ratio', description='Ratio of cis to trans interactions', max=None),
+            'cis_20kb': dict(count_config, title='Cis-20k', description='Number of cis interactions within 20kb'),
+            'frac_cis_20kb': dict(rate_config, title='Cis-20k Rate', description='Fraction of cis interactions within 20kb'),
+        }
+        
+        # Create the violin plot with all metrics
+        self.add_section(
+            name='Hi-C Deduplication Statistics',
+            anchor='hic_dedup_violin',
+            description='Distribution of Hi-C deduplication statistics across samples. Shows counts and rates from the deduplication analysis.',
+            plot=violin.plot(
+                self.hic_dedup_stats_data,
+                headers=headers,
+                pconfig={
+                    'id': 'hic_dedup_stats_violin',
+                    'title': 'Hi-C Deduplication: Statistics',
                 },
             ),
         )
