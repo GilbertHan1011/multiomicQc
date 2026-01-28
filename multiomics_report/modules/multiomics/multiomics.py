@@ -1151,11 +1151,10 @@ class MultiqcModule(BaseMultiqcModule):
                         if '.' in val_str or 'summary/frac' in key or 'frac_' in key:
                             # Parse as float
                             value = float(val_str)
-                            parsed_data[key] = value
                         else:
                             # Parse as integer
                             value = int(float(val_str))
-                            parsed_data[key] = value
+                        parsed_data[key] = value
                     except ValueError:
                         # Skip non-numeric values
                         continue
