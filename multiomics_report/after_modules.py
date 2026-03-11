@@ -3,13 +3,57 @@ After modules hook and helper functions for MultiQC plugin.
 Handles multiomics_report_after_modules hook and all merge logic.
 """
 import logging
-from typing import Dict
+import re
+from typing import Dict, List, Set
 from collections import OrderedDict
 from multiqc import report
 from multiqc.types import ColumnKey, SectionKey
 from .config import MAD_METRIC_KEYS, IS_PARENT_REGEX
 
 log = logging.getLogger("multiqc")
+
+
+_CHILD_REPLICATE_REGEX = re.compile(r'^(?P<prefix>.+?)-(?P<replicate>\d+)(?P<suffix>_.+)?$')
+
+
+def _get_parent_candidates(sample_name: str) -> List[str]:
+    """Return possible parent keys for a child sample name.
+
+    Supports both of these conventions:
+    - SL11-1_CUT27 -> ["SL11", "SL11_CUT27"]
+    - test1-2 -> ["test1"]
+    - CT10_CUT26 -> ["CT10_CUT26"] (not a child; no replicate token)
+    """
+    m = _CHILD_REPLICATE_REGEX.match(sample_name)
+    if not m:
+        return [sample_name]
+
+    prefix = m.group('prefix')
+    suffix = m.group('suffix') or ''
+
+    candidates = [prefix]
+    if suffix:
+        candidates.append(f"{prefix}{suffix}")
+    return candidates
+
+
+def _discover_parent_sample_names() -> Set[str]:
+    """Infer which sample names are true parent rows from child replicate names.
+
+    This avoids treating normal samples such as CT10_CUT26 as parent rows simply
+    because they do not contain a hyphen.
+    """
+    possible_parents: Set[str] = set()
+
+    for samples_dict in report.general_stats_data.values():
+        for sample_group in samples_dict.keys():
+            sample_name = str(sample_group)
+            candidates = _get_parent_candidates(sample_name)
+            if candidates != [sample_name]:
+                possible_parents.update(candidates)
+
+    return possible_parents
+
 
 
 def multiomics_report_after_modules():
@@ -41,17 +85,20 @@ def multiomics_report_after_modules():
 # ------------------------------------------------------------------------------
 
 def _extract_and_hide_parents() -> Dict[str, Dict]:
-    """Finds samples matching the Parent Regex, extracts data, and deletes them from report."""
+    """Finds inferred parent samples, extracts data, and deletes them from report."""
     parent_data = {}
     removed_count = 0
+    inferred_parent_names = _discover_parent_sample_names()
+
+    log.debug(f"Plugin: Inferred parent sample names: {sorted(inferred_parent_names)}")
 
     # Iterate over a list(keys) because we will modify the dictionary size during iteration
     for section_key, samples_dict in list(report.general_stats_data.items()):
         for sample_group in list(samples_dict.keys()):
             sample_name = str(sample_group)
 
-            # Check if this is a parent (e.g., no hyphens)
-            if IS_PARENT_REGEX.match(sample_name):
+            # Only treat rows as parents if they were inferred from child replicate names.
+            if sample_name in inferred_parent_names and IS_PARENT_REGEX.match(sample_name):
                 
                 # Init storage
                 if sample_name not in parent_data:
@@ -245,15 +292,11 @@ def _merge_parent_data_into_children(parent_data: Dict, headers: OrderedDict):
 
         for sample_group, rows in samples_dict.items():
             sample_name = str(sample_group)
-            
-            # Logic: Child 'test1-1' -> Parent 'test1'
-            # Adjust this split logic if your naming convention changes!
-            base_name = sample_name.split('-')[0]
+            candidates = _get_parent_candidates(sample_name)
 
-            if base_name in parent_data:
-                source_stats = parent_data[base_name]
-                log.debug(f"Plugin: Found match: child '{sample_name}' -> parent '{base_name}' in section '{section_key}'")
-                log.debug(f"Plugin: Parent '{base_name}' has keys: {list(source_stats.keys())}")
+            matched_candidates = [candidate for candidate in candidates if candidate in parent_data]
+            if matched_candidates:
+                log.debug(f"Plugin: Found match candidates for child '{sample_name}' in section '{section_key}': {matched_candidates}")
                 
                 # Check for merge collision (Child already has this data?)
                 # We check the first row for any MAD metric key
@@ -273,15 +316,19 @@ def _merge_parent_data_into_children(parent_data: Dict, headers: OrderedDict):
                     log.debug(f"Plugin: Child '{sample_name}' already has MAD data, skipping merge")
                     continue # Skip, already merged
 
-                # Perform Merge
+                # Perform Merge from all matched parent candidates.
+                # This allows combining stats stored under different parent keys,
+                # e.g. SL11 (reproducibility qc) + SL11_CUT27 (pearson_r).
                 merged_keys = []
-                for row in rows:
-                    if hasattr(row, 'data') and row.data:
-                        # Update child row with parent data (only new keys)
-                        for k, v in source_stats.items():
-                            if k not in row.data:
-                                row.data[k] = v
-                                merged_keys.append(str(k))
+                for matched_parent in matched_candidates:
+                    source_stats = parent_data[matched_parent]
+                    log.debug(f"Plugin: Merging child '{sample_name}' <- parent '{matched_parent}' with keys: {list(source_stats.keys())}")
+                    for row in rows:
+                        if hasattr(row, 'data') and row.data:
+                            for k, v in source_stats.items():
+                                if k not in row.data:
+                                    row.data[k] = v
+                                    merged_keys.append(str(k))
                 
                 log.debug(f"Plugin: Merged keys into '{sample_name}': {merged_keys}")
                 match_count += 1

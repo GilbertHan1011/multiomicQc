@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+import statistics
 from collections import OrderedDict
 from multiqc.base_module import BaseMultiqcModule, ModuleNoSamplesFound
 from multiqc import config
@@ -243,6 +244,7 @@ class MultiqcModule(BaseMultiqcModule):
         
         self.write_general_stats()
         self.write_gene_type_plot()
+        self.write_hic_qc_summary_table()
         self.write_hic_tailor_table()
         self.write_hic_tailor_violin_plots()
         self.write_hic_dedup_violin_plots()
@@ -877,9 +879,17 @@ class MultiqcModule(BaseMultiqcModule):
                     rep1 = data_row[rep1_idx]
                     pearson_r = float(data_row[pearson_r_idx])
                     
-                    # Extract parent sample name (e.g., test1-1 -> test1)
-                    # Split on hyphen and take the first part
-                    parent_name = rep1.split('-')[0]
+                    # Extract parent sample name.
+                    # Supports both:
+                    #   SL11-1_CUT27 -> SL11 / SL11_CUT27
+                    #   test1-2 -> test1
+                    rep_match = re.match(r'^(?P<prefix>.+?)-(?P<replicate>\d+)(?P<suffix>_.+)?$', rep1)
+                    if rep_match:
+                        prefix = rep_match.group('prefix')
+                        suffix = rep_match.group('suffix') or ''
+                        parent_name = f"{prefix}{suffix}" if suffix else prefix
+                    else:
+                        parent_name = rep1
                     
                     # Store with parent sample name
                     if parent_name not in self.replicate_correlations_data:
@@ -1482,7 +1492,10 @@ class MultiqcModule(BaseMultiqcModule):
             for key in ['total_pairs_read', 'stitched', 'stitched_cut', 'stitched_uncut', 
                        'unstitched', 'unstitched_trimmed', 'unstitched_untrimmed', 'unstitched_discarded',
                        'hic_valid', 'hic_dangling_end', 'hic_religation', 'hic_self_circle_frag',
-                       'hic_filtered', 'hic_dumped']:
+                       'hic_filtered', 'hic_dumped', 'valid_pairs', 'aligned', 'reads_low_quality',
+                       'low_map', 'many_hits', 'exact_dedup_hits', 'pcr_dup_count', 'optical_dup_count',
+                       'pair_type_uu', 'pair_type_nn', 'pair_type_mm', 'pair_type_ur', 'rescued_chimeras',
+                       'cis_0_1kb', 'cis_1_10kb', 'cis_10_100kb', 'cis_100kb_plus', 'trans', 'sum_mapq']:
                 if key in data:
                     try:
                         parsed[key] = int(data[key])
@@ -2164,6 +2177,196 @@ class MultiqcModule(BaseMultiqcModule):
             description='Counts of different gene biotypes (protein_coding, rRNA, etc.)',
             plot=plot
         )
+
+    def write_hic_qc_summary_table(self):
+        """Creates a Hi-C QC summary table aligned with downstream reporting needs."""
+        sample_names = sorted(
+            set(self.hic_tailor_data.keys())
+            | set(self.hic_library_complexity_data.keys())
+            | set(self.hic_loop_counts_data.keys())
+            | set(self.hic_dist_contact_data.keys())
+        )
+        if not sample_names:
+            return
+
+        table_data = {}
+        for sample_name in sample_names:
+            row = {}
+            ht = self.hic_tailor_data.get(sample_name, {})
+            lc = self.hic_library_complexity_data.get(sample_name, {})
+            loops = self.hic_loop_counts_data.get(sample_name, {})
+            dist = self.hic_dist_contact_data.get(sample_name, {})
+
+            total_pairs = ht.get('total_pairs_read')
+            valid_pairs = ht.get('valid_pairs')
+            aligned = ht.get('aligned')
+            trans = ht.get('trans')
+            cis_10_100kb = ht.get('cis_10_100kb', 0)
+            cis_100kb_plus = ht.get('cis_100kb_plus', 0)
+            cis_gt_20k = None
+            if cis_10_100kb is not None or cis_100kb_plus is not None:
+                cis_gt_20k = (cis_10_100kb or 0) + (cis_100kb_plus or 0)
+
+            if total_pairs:
+                row['raw_pair'] = total_pairs
+            if total_pairs and valid_pairs is not None:
+                row['VP_rate'] = valid_pairs / total_pairs
+                row['Discard_rate'] = 1 - (valid_pairs / total_pairs)
+                row['Dangling_pct'] = ht.get('hic_dangling_end', 0) / total_pairs
+                row['Self_ligation_pct'] = ht.get('hic_self_circle_frag', 0) / total_pairs
+                row['linker_rate'] = ht.get('hic_religation', 0) / total_pairs
+            if valid_pairs is not None:
+                row['VP_unique'] = valid_pairs
+            if cis_gt_20k is not None:
+                row['VP_cis_gt_20K'] = cis_gt_20k
+            if 'align_percentage' in ht:
+                row['Map_pct'] = ht['align_percentage']
+            if aligned:
+                row['Dup_pct'] = ht.get('pcr_dup_count', 0) / aligned
+            if valid_pairs:
+                if cis_gt_20k is not None:
+                    row['VP_cis_20k_over_valid_pair'] = cis_gt_20k / valid_pairs
+                if trans is not None:
+                    row['trans_over_VP_unique'] = trans / valid_pairs
+            if trans:
+                row['cis_trans_ratio'] = cis_gt_20k / trans if cis_gt_20k is not None else None
+
+            if 'library_complexity' in lc:
+                row['estimate_unique_2B_without_optical'] = lc['library_complexity']
+            if 'total_loops' in loops:
+                row['Loop_count'] = loops['total_loops']
+
+            dist_mse = dist.get('mse')
+            if isinstance(dist_mse, (int, float)):
+                row['dist_mse_log'] = dist_mse
+
+            table_data[sample_name] = row
+
+        headers = OrderedDict()
+        headers['raw_pair'] = {
+            'title': 'raw_pair',
+            'description': 'Total read pairs from hic_tailor total_pairs_read',
+            'format': '{:,.0f}',
+            'scale': 'Blues'
+        }
+        headers['VP_rate'] = {
+            'title': 'VP_rate',
+            'description': 'valid_pairs / raw_pair',
+            'min': 0, 'max': 1,
+            'format': '{:.4f}',
+            'scale': 'RdYlGn'
+        }
+        headers['VP_unique'] = {
+            'title': 'VP_unique',
+            'description': 'Unique valid pairs',
+            'format': '{:,.0f}',
+            'scale': 'Greens'
+        }
+        headers['Discard_rate'] = {
+            'title': 'Discard rate',
+            'description': '1 - VP_rate',
+            'min': 0, 'max': 1,
+            'format': '{:.4f}',
+            'scale': 'OrRd'
+        }
+        headers['VP_cis_gt_20K'] = {
+            'title': 'VP_cis>20K',
+            'description': 'cis_10_100kb + cis_100kb_plus from hic_tailor',
+            'format': '{:,.0f}',
+            'scale': 'PuBuGn'
+        }
+        headers['Map_pct'] = {
+            'title': 'Map%',
+            'description': 'Alignment percentage from hic_tailor rates.align_percentage',
+            'min': 0, 'max': 1,
+            'format': '{:.2%}',
+            'scale': 'RdYlGn'
+        }
+        headers['Dup_pct'] = {
+            'title': 'Dup%',
+            'description': 'pcr_dup_count / aligned',
+            'min': 0,
+            'format': '{:.2%}',
+            'scale': 'OrRd'
+        }
+        headers['VP_cis_20k_over_valid_pair'] = {
+            'title': 'VP_cis_20k/valid_pair',
+            'description': 'VP_cis>20K / valid_pairs',
+            'min': 0,
+            'format': '{:.2%}',
+            'scale': 'RdYlGn'
+        }
+        headers['trans_over_VP_unique'] = {
+            'title': 'trans/VP_unique',
+            'description': 'trans / valid_pairs',
+            'min': 0,
+            'format': '{:.2%}',
+            'scale': 'Oranges'
+        }
+        headers['cis_trans_ratio'] = {
+            'title': 'cis/trans ratio',
+            'description': '(cis_10_100kb + cis_100kb_plus) / trans',
+            'min': 0,
+            'format': '{:.3f}',
+            'scale': 'RdYlGn'
+        }
+        headers['Dangling_pct'] = {
+            'title': 'Dangling%',
+            'description': 'hic_dangling_end / raw_pair',
+            'min': 0,
+            'format': '{:.2%}',
+            'scale': 'OrRd'
+        }
+        headers['Self_ligation_pct'] = {
+            'title': 'Self_ligation%',
+            'description': 'hic_self_circle_frag / raw_pair',
+            'min': 0,
+            'format': '{:.3%}',
+            'scale': 'OrRd'
+        }
+        headers['linker_rate'] = {
+            'title': 'linker_rate',
+            'description': 'Using hic_religation / raw_pair as current proxy',
+            'min': 0,
+            'format': '{:.2%}',
+            'scale': 'OrRd'
+        }
+        headers['estimate_unique_2B_without_optical'] = {
+            'title': 'estimate_unique_2B_without_optical',
+            'description': 'Library complexity C from pairtools complexity TSV',
+            'format': '{:,.0f}',
+            'scale': 'Blues'
+        }
+        headers['dist_mse_log'] = {
+            'title': 'dist_mse_log',
+            'description': 'Distance-contact MSE from downstream_dist loglog fits',
+            'format': '{:.6f}',
+            'scale': 'PuRd'
+        }
+        headers['Loop_count'] = {
+            'title': 'Loop_count',
+            'description': 'Total loop count from downstream loop_counts TSV',
+            'format': '{:,.0f}',
+            'scale': 'Purples'
+        }
+
+        table_html = table.plot(
+            table_data,
+            headers,
+            {
+                'id': 'hic_qc_summary_table',
+                'title': 'Hi-C QC Summary Table',
+                'col1_header': 'Sample',
+                'sort_rows': False,
+            }
+        )
+        if table_html:
+            self.add_section(
+                name='Hi-C QC Summary',
+                anchor='hic_qc_summary',
+                description='Merged Hi-C QC summary assembled from hic_tailor, pairtools complexity, downstream loop counts, and distance-contact fit files.',
+                plot=table_html,
+            )
 
     def write_hic_tailor_table(self):
         """ Creates a table for Hi-C Tailor statistics """
